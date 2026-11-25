@@ -1,0 +1,37 @@
+# 恢复代码地图
+
+当前不是 React/Vue 工程；主前端是一个 IIFE、HTML 模板字符串、事件代理和 hash 路由组成的原生 JS 应用。不要另建空壳 UI 替换已有业务。
+
+## 请求链路
+
+`src/server/entry.js` 的 `worker.fetch`：`/api/ai/*` → `fqaiRoute`；`/__portal` → 官网门户；其余 → `$t.fetch`。`APPLY_DB` 在适配层映射为业务后端的 `DB`。业务资源请求经 `applicationAssets` 补 `/apply` 前缀；保留当前静态目录结构。
+
+`application.js` 中可用函数名搜索定位：
+
+| 符号 | 职责 |
+| --- | --- |
+| `Ye` | 内置任务模板、院校要求等初始数据 |
+| `$t.fetch` | 业务请求入口、数据库初始化与异常响应 |
+| `Hn` | 自动建表与基础初始化 |
+| `Wn` | 页面和静态资源响应 |
+| `Yn` | `/api` 路由分派与登录/首次改密检查 |
+| `Zn` / `Xn` / `Jn` | 初始化 / 登录 / bootstrap |
+| `Ce` | 读取员工/学生会话 |
+| `Vt` | DIY 与 DIY 管理 API |
+| `$n` | 通用业务表的单记录操作 |
+| `fqDocumentAction` | revise / proxy-confirm / review 文书操作 |
+| `ni` | 管理员导入导出等接口 |
+
+这些是根据当前代码调用关系得到的导航，不是恢复出的原始命名。后端大文件前部有大量院校/演示数据，业务代码主要在后部；优先按符号搜索，不依赖行号。
+
+## 数据模型
+
+D1/SQLite 的 `records(tbl,id,student_id,data,updated_at)` 按业务表名和记录 ID 保存 JSON。学生、申请、提交平台、考试轮次、任务、材料、文书、版本、审核、曲目、推荐人等业务通过此表保存。`users`、`sessions`、`login_attempts`、`meta`、`audit` 独立保存认证、院校库及审计。DIY 使用 `diy_accounts`、`diy_sessions`、`diy_records`。AI 运行时创建自己的日志、用量、缓存、反馈和院校快照表。基础 SQL 原定义位于 recovery/original/，不是完整迁移历史。
+
+## AI 与前端连接
+
+`ai.js` 的 `fqaiConfig` 读取配置；`fqaiRoute` 验证会话并分派至 `fqaiDispatch`；`fqaiD1Data` 接入业务数据。前端 `public/apply/app/ai.js` 通过主应用末尾只读的 `window.FQAPP` 引用调用现有保存逻辑。拆分主前端时必须保留这些接口或同步适配。
+
+## 本地与生产边界
+
+`scripts/local-d1.mjs` 只实现当前调用所需的 prepare/bind/first/all/run/batch 子集，不是 Cloudflare D1 全功能模拟器。本地服务串行进入共享 SQLite 连接，避免开发适配器的事务互相交错；这不验证生产并发。Cloudflare 平台限制、D1 分布式行为、联网 AI、浏览器完整交互仍需另行验证。

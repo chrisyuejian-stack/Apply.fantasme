@@ -1,0 +1,11 @@
+CREATE TABLE IF NOT EXISTS records (tbl TEXT NOT NULL, id TEXT NOT NULL, student_id TEXT, data TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (tbl, id));
+CREATE INDEX IF NOT EXISTS records_student ON records (tbl, student_id);
+CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE COLLATE NOCASE, name TEXT NOT NULL, role TEXT NOT NULL, student_id TEXT, active INTEGER NOT NULL DEFAULT 1, pw_hash TEXT, pw_salt TEXT, must_change INTEGER NOT NULL DEFAULT 1, created_at TEXT, updated_at TEXT, last_login TEXT);
+CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at INTEGER NOT NULL, created_at INTEGER, ip TEXT, ua TEXT);
+CREATE TABLE IF NOT EXISTS login_attempts (key TEXT PRIMARY KEY, count INTEGER, locked_until INTEGER, updated_at INTEGER);
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT, user_id TEXT, action TEXT, tbl TEXT, rec_id TEXT, detail TEXT);
+CREATE TABLE IF NOT EXISTS diy_accounts (id TEXT PRIMARY KEY, phone TEXT NOT NULL UNIQUE, name TEXT NOT NULL, pw_hash TEXT, pw_salt TEXT, active INTEGER NOT NULL DEFAULT 1, must_change INTEGER NOT NULL DEFAULT 0, profile TEXT, grants TEXT, requests TEXT, converted_to TEXT, created_at TEXT, last_login TEXT);
+CREATE TABLE IF NOT EXISTS diy_sessions (token_hash TEXT PRIMARY KEY, acct TEXT NOT NULL, expires_at INTEGER NOT NULL, created_at INTEGER);
+CREATE TABLE IF NOT EXISTS diy_records (tbl TEXT NOT NULL, id TEXT NOT NULL, acct TEXT NOT NULL, data TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (tbl, id));
+CREATE INDEX IF NOT EXISTS diy_records_acct ON diy_records (acct, tbl);

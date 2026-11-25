@@ -1,0 +1,38 @@
+[
+  {
+    "path": "apply/app/app.css",
+    "sha256": "b372b89da5d40cbdfebdcc323a80204707acfe282b4a8a88d28c502f0b81200f"
+  },
+  {
+    "path": "apply/app/app.js",
+    "sha256": "a84f1ea5c8aca64fdbdba2bc978efc1e6749e38b4a18bda148e85d0a01989276"
+  },
+  {
+    "path": "apply/app/diy-preview.jpg",
+    "sha256": "7f8676e6322fbe3302fe2b7744f6cf57f9d22de9741971ab18767be15ac709f6"
+  },
+  {
+    "path": "apply/app/index.html",
+    "sha256": "9ff07fb3243a13fdd5c49afdc347e57a639926c3d78a631abc3bb7575aed9a5a"
+  },
+  {
+    "path": "apply/app/ai.css",
+    "sha256": "b976ae4647d7f90e0de0abe90eda763ccd76eed472bf418d9b7bb73ae80ae2df"
+  },
+  {
+    "path": "apply/app/ai.js",
+    "sha256": "76026961db39753dde3fd3b2ca55155a135b94daff5c77f63c21603c166df9ee"
+  },
+  {
+    "path": "apply/login.html",
+    "sha256": "4cd667b99f754d9e45ed0d65dae25f23b5b8105cecf89d947ed34ba1bea5c53c"
+  },
+  {
+    "path": "apply/logo.png",
+    "sha256": "47085be10af80e92db1ac809e11f7c0602fe6af638baec9596fc7034db5ba1b1"
+  },
+  {
+    "path": "apply/login.js",
+    "sha256": "8ce95b99fd4c653426ac7acc9bffb38de157df504b38d42691427d4c2f42a920"
+  }
+]
