@@ -1,0 +1,14 @@
+{
+  "name": "fantasme-apply-extracted",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "dev": "npm run build && node scripts/dev.mjs",
+    "verify:baseline": "node scripts/verify-baseline.mjs"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

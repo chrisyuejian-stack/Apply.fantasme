@@ -1,0 +1,100 @@
+枫琴 apply 申请系统 · v2.2.1 独立提取
+
+一、结论
+
+原 v2.2.1 包中包含完整的申请系统程序实现。申请工作站前端、账号与会话后端、业务数据保存、文书版本及审核、院校库、DIY 自助申请、AI 助手均在包内。它具备独立部署的代码组成，连接 D1、配置初始化密钥后可以运行基础申请业务。
+
+本包已将这些部分剥离并组装成独立 Pages 项目。原申请后端代码和 AI 后端代码逐字节保留，仅替换合并门户的分流入口，使独立项目的所有请求直接进入申请系统。原 apply/ 下 9 个静态文件逐字节复制。
+
+当前结果是原部署产物中的可运行代码提取。原始开发时的未打包模块、构建历史和线上业务数据库需从其各自来源取得。
+
+二、实际内容
+
+1. 账号与访问
+主管、顾问、文书老师、学生四类账号，登录、会话、密码校验、首次修改临时密码、密码重置、账号启停及登录失败限流。
+
+2. 申请业务
+学员档案、院校申请、提交平台、考试轮次、任务、材料、曲目、推荐人、推荐信请求、活动记录与任务模板。
+
+3. 文书
+文书正文与版本、顾问审核、主管审核、学生确认、主管代确认、修订和并发版本检查。
+
+4. 院校库
+院校要求导入、导出与按学校读取。原包内置院校库为 9 校、导出日期 2026-10-16，另有 10 条初始任务模板。
+此前 AI 演示 HTML 内嵌的 34 校、2026-10-27 数据与这里的内置初始数据不同。
+现有线上数据库可能已经导入更新的院校库，以线上导出为准。
+
+5. DIY 自助申请
+手机号注册、独立会话与个人资料，院校与模板授权、自助记录，以及主管管理、密码重置、停用和转付费学生关联等。
+
+6. AI 助手
+状态、对话、任务建议、流程体检、提交前检查、曲目对照、沟通与推荐信草稿、文书意见、院校库更新检查、联网检索与核实、反馈与用量记录。
+代码中的 AI 模块版本为 ai-2.2。包标称版本为 v2.2.1，申请工作站没有另一个明确产品版本号。
+
+7. 数据
+基础表为 records、users、sessions、login_attempts、meta、audit、diy_accounts、diy_sessions、diy_records。
+records 按 tbl 和 id 分行保存单条业务 JSON。AI 模块运行时另建 fq_ai_log、fq_ai_usage、fq_ai_page_cache、fq_ai_feedback、fq_ai_reqdb_snap 等表。
+数据库结构_原定义.sql 复制了基础建表定义，供审阅。程序本身会初始化这些结构。
+
+三、独立入口的适配
+
+- 独立项目直接进入申请系统，不再按门户域名分流。
+- 保留 apply/ 目录布局，入口为静态资源补上 /apply 前缀，与原门户的申请资源映射一致。
+- APPLY_DB 继续映射为原申请后端使用的 DB。
+- APPLY_SETUP_KEY 通过环境 Secret 传入。独立入口要求明确配置，省去了原合并入口的内置默认安装密钥回退。
+- /__portal 继续按 SITE_URL 返回官网 /portal。SITE_URL 请填写实际官网地址。
+- 应用业务后端和 AI 后端未改写。嵌入登录、会话 Cookie、安全头和原有权限检查沿用原实现。
+
+四、已做验证及边界
+
+原 v2.2.1 Worker 和提取包使用同一组测试、分别使用空 SQLite 测试库运行，均为 11 项通过、0 失败。详细输出见两个测试结果 TXT。
+覆盖匿名页面、未登录拒绝、初始化、学生/申请/任务/文书/曲目保存、文书修订及冲突、学生账号关联与个人范围、首次改密、DIY 注册、AI 状态、院校库与备份导出、所有前端资源、官网入口、登出与失败锁定。
+静态依赖分析未发现遗留的教务或官网函数依赖。两个后端模块与原包对应代码片段完全一致。
+
+测试使用 Node.js SQLite 适配器，尚未将这个独立项目部署到 Cloudflare D1 实测。真实 DeepSeek 请求、联网检索、邮件或外部文件链接、本系统全部业务极端场景未在本次完整实测。生产在线 Worker 与原包的逐字节一致性仍未确认。
+本次检查没有连接或修改线上申请业务数据。
+
+五、文件结构
+
+src/server/application.js    原申请系统后端及初始院校/模板/演示数据
+src/server/ai.js             原 AI 助手后端
+src/server/entry.js          独立运行入口
+public/apply/               原申请系统全部 9 个前端与图片文件
+scripts/build.mjs           无依赖构建脚本
+tests/standalone.test.mjs   独立版与原版对照使用的验证脚本
+dist/                       构建好的 Pages 直传目录
+Pages直传包_apply独立版.zip  该目录的打包结果
+
+包中已有构建产物，可直接上传。需要重新构建时，用 Node.js 24 或以上运行 npm run build。运行 npm test 执行本地检查。构建和测试使用 Node 自带模块，无需安装 npm 依赖。
+
+六、Cloudflare 网页部署
+
+建议先用一个新的 Pages 项目与新 D1 验证这份独立提取包。
+1. Workers & Pages 创建 Pages 项目，通过直接上传选择 Pages直传包_apply独立版.zip。
+2. 在项目 Settings 中配置生产环境绑定，D1 绑定名为 APPLY_DB。
+3. 在 Variables and Secrets 中添加 APPLY_SETUP_KEY，类型 Secret，使用自己生成的长随机字符串，至少 12 位。
+4. 添加普通变量 SITE_URL，实际官网为 https://www.fantasmearts.com。可选 PBKDF2_ITERATIONS 为 100000。
+5. 如需 AI，配置 DEEPSEEK_API_KEY 为 Secret。AI_BASE_URL、AI_MODEL、AI_VERIFY_MODEL、AI_PRO_MODEL 依实际服务账号支持的端点和模型填写。
+6. 设置后重新部署一次，让绑定和变量生效。
+7. 打开项目 /login，使用初始化入口，填写安装密钥并建立主管。首次新库运行会建表并导入原包内置院校库与任务模板。
+8. 已有生产数据库先通过原系统主管导出备份，在新项目验证导入与登录。导入业务备份时新增用户会生成临时密码，不等同于复制原数据库中的密码哈希。
+9. 迁移现有线上域名和数据库绑定属于下一步实际部署操作，应在新项目验证完成后再安排。
+
+AI 可选变量与原包默认值
+
+AI_BASE_URL        https://api.deepseek.com
+AI_MODEL           deepseek-flash
+AI_VERIFY_MODEL    跟随 AI_MODEL，未设时 deepseek-flash
+AI_PRO_MODEL       deepseek-v4-pro
+AI_ROLES           supervisor,advisor
+AI_ESSAY_ROLES     supervisor,advisor,writer
+AI_DAILY_CHAT      150
+AI_DAILY_VERIFY    40
+AI_DAILY_ESSAY     100
+AI_DAILY_PRO       60
+AI_WEB             on
+AI_WEB_BASE        https://api.deepseek.com
+AI_DAILY_WEB       300
+AI_DELETE          strict
+
+以上为原包代码默认值，模型与联网 API 当前可用性需用实际服务账号确认。

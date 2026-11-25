@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#3B2A5E"><meta name="robots" content="noindex,nofollow">
+<title>登录 · 枫琴申请工作站</title>
+<link rel="icon" href="/logo.png">
+<style>
+:root{--bg:#EEEBF1;--fg:#1E1A26;--muted:#6B6476;--muted2:#8E8798;--line:#DDD8E4;--line2:#CEC7D7;--accent:#3B2A5E;--focus:#8E2F8C;--err:#A52F38;--errbg:#FBEAEC;--ok:#2F7D4F;--okbg:#E9F5EC;--warnbg:#FDF1E1}
+*{box-sizing:border-box}html,body{margin:0;min-height:100%;font:14px/1.55 "Noto Sans SC","PingFang SC","Microsoft YaHei",system-ui,sans-serif;background:var(--bg);color:var(--fg)}
+.ribbon{height:5px;background:linear-gradient(90deg,#7A3FC0,#E8352E 55%,#F6A54A)}
+.wrap{min-height:calc(100vh - 5px);display:grid;place-items:center;padding:24px 16px}
+.card{width:min(440px,100%);background:#fff;border:1px solid var(--line);border-radius:18px;box-shadow:0 1px 2px rgba(36,27,51,.04),0 8px 28px rgba(36,27,51,.055);padding:26px}
+.brand{display:flex;align-items:center;gap:10px;justify-content:center;margin-bottom:16px}.brand img{width:52px;height:48px;object-fit:contain}
+.brand b{display:block;font-size:16px;color:var(--accent)}.brand i{font:italic 15px Georgia,serif;color:var(--muted)}
+h2{font-size:16px;color:var(--accent);margin:0 0 4px}p{margin:0 0 14px;color:var(--muted);font-size:12.5px}
+label{display:block;font-size:11.5px;font-weight:800;color:var(--muted);margin:10px 0 5px}
+input[type=text],input[type=password]{width:100%;border:1px solid var(--line2);border-radius:9px;padding:9px 11px;font:inherit;outline:none}
+input:focus{border-color:var(--focus);box-shadow:0 0 0 3px rgba(142,47,140,.1)}
+button{width:100%;margin-top:16px;border:0;border-radius:10px;padding:11px;background:var(--accent);color:#fff;font:inherit;font-weight:700;cursor:pointer}
+button:disabled{opacity:.6;cursor:wait}
+.check{display:flex;gap:8px;align-items:center;margin-top:12px;font-size:12.5px;color:var(--fg)}
+.msg{display:none;margin-top:12px;padding:9px 12px;border-radius:9px;font-size:12.5px}.msg.err{display:block;background:var(--errbg);color:var(--err)}.msg.ok{display:block;background:var(--okbg);color:var(--ok)}
+.back{display:block;margin-top:14px;text-align:center;font-size:12px;color:var(--muted);text-decoration:none}.back:hover{color:var(--accent)}
+.foot{margin-top:16px;text-align:center;font-size:11px;color:var(--muted2)}
+table{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}td,th{border-bottom:1px solid var(--line);padding:6px 4px;text-align:left}code{background:#F4F1F7;padding:1px 5px;border-radius:4px}
+[hidden]{display:none!important}
+.seg{display:flex;gap:4px;background:#F1EEF4;border-radius:10px;padding:4px;margin-bottom:14px}
+.seg button{margin:0;flex:1;background:transparent;color:var(--muted);font-weight:500;padding:8px;border-radius:8px}
+.seg button.on{background:#fff;color:var(--accent);font-weight:800;box-shadow:0 1px 2px rgba(0,0,0,.06)}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:0 10px}
+select{width:100%;border:1px solid var(--line2);border-radius:9px;padding:9px 11px;font:inherit;background:#fff}
+.agree{display:flex;gap:8px;align-items:flex-start;margin-top:12px;font-size:12px;color:var(--fg);line-height:1.5}
+.fq-embedded .wrap{min-height:0;padding:12px}.fq-embedded .ribbon,.fq-embedded .back{display:none}.fq-embedded .card{width:100%;box-shadow:none}.fq-embedded{background:transparent}
+</style>
+</head><body><div class="ribbon"></div>
+<div class="wrap"><div class="card">
+  <div class="brand"><img src="/logo.png" alt="Fantasme"><div><b>枫琴申请工作站</b><i>Admissions Workspace</i></div></div>
+
+  <div class="seg" id="seg" hidden><button type="button" data-tab="login" class="on">登录</button><button type="button" data-tab="reg">DIY 免费版注册</button></div>
+  <form id="login">
+    <label for="u">登录名 / 手机号</label><input id="u" type="text" autocomplete="username" placeholder="员工与学员：登录名；DIY 免费版：注册的手机号" required>
+    <label for="p">密码</label><input id="p" type="password" autocomplete="current-password" required>
+    <button type="submit">登录</button>
+    <div class="msg" id="loginMsg"></div>
+    <div class="foot">忘记密码请联系枫琴顾问重置 · 连续输错 5 次将锁定 15 分钟</div>
+  </form>
+
+  <form id="reg" hidden>
+    <p>永久免费 · 一个手机号注册一个账号 · 注册后用手机号在「登录」中登录</p>
+    <div class="row2"><div><label for="rp">手机号</label><input id="rp" type="text" inputmode="numeric" autocomplete="tel" placeholder="11 位手机号" required></div><div><label for="rn">姓名</label><input id="rn" type="text" required></div></div>
+    <div class="row2"><div><label for="rw">设置密码</label><input id="rw" type="password" autocomplete="new-password" placeholder="8 位以上，含字母和数字" required></div><div><label for="rw2">再次输入</label><input id="rw2" type="password" autocomplete="new-password" required></div></div>
+    <div class="row2"><div><label for="rl">申请层次</label><select id="rl"><option value="PG">研究生</option><option value="UG">本科</option></select></div><div><label for="rs">入学季</label><input id="rs" type="text" value="2027 Fall"></div></div>
+    <label for="rm">专业方向</label><select id="rm"></select>
+    <label class="agree"><input type="checkbox" id="ra"> 我已阅读并同意《用户协议》《隐私政策》，同意枫琴就申请事宜与我联系</label>
+    <button type="submit">注册</button>
+    <div class="msg" id="regMsg"></div>
+  </form>
+
+  <form id="setup" hidden>
+    <h2>首次安装：创建申请主管账号</h2><p>系统中还没有任何账号。请创建第一个申请主管账号，之后由主管为其他成员开设账号。</p>
+    <label for="sk">安装密钥（wrangler.toml 中的 APPLY_SETUP_KEY）</label><input id="sk" type="password" required>
+    <label for="sn">主管姓名</label><input id="sn" type="text" required>
+    <label for="su">登录名（字母、数字或 . _ -）</label><input id="su" type="text" autocomplete="username" required>
+    <label for="sp">密码（至少 8 位，含字母和数字）</label><input id="sp" type="password" autocomplete="new-password" required>
+    <label for="sp2">再次输入密码</label><input id="sp2" type="password" autocomplete="new-password" required>
+    <label class="check"><input id="sd" type="checkbox"> 同时载入演示数据（3 位虚构学生与演示账号，用于培训）</label>
+    <button type="submit">创建并进入系统</button>
+    <div class="msg" id="setupMsg"></div>
+  </form>
+
+  <div id="done" hidden>
+    <h2>安装完成</h2><p>演示账号的初始密码只显示这一次，请复制保存；各账号首次登录时必须修改密码。</p>
+    <table id="acc"><thead><tr><th>姓名</th><th>登录名</th><th>初始密码</th></tr></thead><tbody></tbody></table>
+    <button type="button" id="enter">进入系统</button>
+  </div>
+  <a class="back" href="/__portal">← 返回枫琴官网</a>
+</div></div>
+<script src="/login.js?v=20261027-fast1"></script>
+</body></html>
