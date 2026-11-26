@@ -1,12 +1,13 @@
 # 当前状态（单页速览，谁改了状态谁更新）
 
-更新：2026-11-26（首轮缺陷全部修复并上线；M1 已开始）
+更新：2026-11-26（M1 后端/前端拆分完成；M2 后端在红队）
 
 ## 里程碑
 - [x] v2.2.1 恢复基线、审计报告、协作文档、Preview 工作流
 - [x] apply 剥离到独立生产项目 `fantasme-apply`（D1 迁移 14 表内容比对一致，域名切换完成）
 - [x] **BUG-01～12 全部修复并上线**，性能阶段 A 上线（500 学生 `aiAuditAll` p50 331→168 ms）。终验：`npm test` 19/19、`src/server` + 回归 55/55、E2E 无问题（Antigravity，#26）
-- [~] **M1 可维护性**：1a 已合并（#43，后端按 `src/server/parts/` 拼接，`npm run bundle:hash`）；1b–1e 待做
+- [x] **M1 可维护性（搬迁部分）**：后端 14 个片段（#43/#46/#54）、前端 5 个片段（#47），产物逐字节不变；1e 命名待做
+- [~] **M2 文书文件（R2）**：R2 桶与 `FILES` 绑定已建（#52，生产 `fantasme-apply-files`、preview `fantasme-apply-files-preview`）；后端 #55 在 Grok 红队，合并需主人决定；前端由 Claude 接
 - [ ] M2 文书文件（R2）、M3 任务板与助理对接（设计见 `docs/design/next-milestones.md`）
 
 ## 环境
@@ -21,20 +22,19 @@
 ## 进行中 / 待办
 | issue | 角色 | 内容 |
 |---|---|---|
-| #44 | GPT | BUG-02 跟进：AI `studentRows` 排除 `__imp:*`；导入请求体 20 MB 上限（低风险） |
 | #27 | Grok-Ops | 上线后只读巡检；500 学生合成数据实测（需主人授权写测试库） |
-| — | GPT | M1-1b：内置数据 `Ye` 搬到 `parts/00-seed-data.js`（哈希必须不变） |
-| — | Claude | M1-1d：前端片段化与构建 |
+| #55 | GPT / Grok-Ops / Antigravity | M2 后端：红队 + 真实 R2 验收后由主人决定合并 |
+| — | Claude | M2 前端（基于 #55） |
 
 ## 主人待办（安全收尾）
-1. `production` 环境的 Cloudflare Token 收缩为仅 Pages Edit（M2 建 R2 桶时再临时加 R2 Edit）。
+1. `production` 环境的 Cloudflare Token：R2 桶已建好，可收回 R2 Edit，收缩为仅 Pages Edit。
 2. 更改曾贴在对话中的助理系统临时密码。
 3. 未经脚本验证的部分需人工确认：员工实际登录与日常操作、真实 DeepSeek AI、管理员人工交互。
 
 ## 文件认领（同一文件同一时间一个写入者）
 | 文件 | 写入者 |
 |---|---|
-| `src/server/parts/*`、`src/server/ai.js` | GPT（Claude 需先登记） |
+| `src/server/parts/*`（片段见 CODE_MAP）、`src/server/ai.js` | GPT（Claude 需先登记） |
 | `src/client/app/parts/*`、`public/apply/app/*`（app.js 为生成文件） | Claude |
 | `tests/`、`scripts/perf-bench.mjs`、`.github/workflows/` | Antigravity |
 | `docs/*`（除 testing/、recovery/） | Claude |
