@@ -8205,19 +8205,12 @@ async function Qe(t, e, i, n, o, r) {
         ok: !0,
         record: o
       } : a();
-    case "recommenders":
-      return p ? {
-        ok: !0,
-        record: o
-      } : f ? i === "delete" ? (await r("refRequestsOf", n.id)) ? a("\u8BE5\u63A8\u8350\u4EBA\u5DF2\u6709\u63A8\u8350\u4FE1\u8BF7\u6C42\uFF0C\u8BF7\u8054\u7CFB\u987E\u95EE") : {
-        ok: !0
-      } : {
-        ok: !0,
-        record: Object.assign(o, {
-          fromIntake: !0,
-          note: n?.note || ""
-        })
-      } : a();
+    case "recommenders": {
+      if (!p && (!f || (n && n.fromIntake !== true))) return a('只能编辑自己通过采集表创建的推荐人');
+      if (n && (i === 'delete' || f) && await r('refRequestsOf', n.id)) throw new I(409, '该推荐人已有推荐信请求，请先处理关联请求');
+      if (p) return {ok: true, record: o};
+      return {ok: true, record: i === 'delete' ? null : {...o, fromIntake: true, note: n?.note || ''}};
+    }
     case "activity":
       return i === "delete" || n ? a("\u52A8\u6001\u8BB0\u5F55\u4E0D\u80FD\u4FEE\u6539") : $e(t, d) ? {
         ok: !0,
