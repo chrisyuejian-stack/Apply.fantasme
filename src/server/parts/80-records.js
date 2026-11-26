@@ -33,7 +33,7 @@ async function $n(t, e, i, n, o, r) {
     l && (f.studentId = l.studentId);
     if (n === 'versions') fqVersionParent = parent?.data;
   }
-  let c = await Qe(s, n, "put", a, f, d);
+  let c = await Qe(s, n, "put", a, f, d, e.FILES);
   if (!c.ok) throw new I(403, c.error);
   if (a && (!fqHasBase || (u ?? null) !== (a.updatedAt ?? null))) {
     let l = Be(s, n, a, {

@@ -100,6 +100,7 @@ async function Yn(t, e, i) {
   if (s.mustChange) throw new I(403, "\u8BF7\u5148\u4FEE\u6539\u521D\u59CB\u5BC6\u7801", {
     mustChange: !0
   });
+  if (n === '/files' || n.startsWith('/files/')) return fqFiles(t,e,s,i);
   const fqAction = n.match(/^\/documents\/([A-Za-z0-9_-]{2,80})\/(revise|proxy-confirm|review)$/);
   if (fqAction && o === 'POST') return fqDocumentAction(t,e,s,fqAction[1],fqAction[2]);
   if (n === "/bootstrap" && o === "GET") return Jn(e, s);
