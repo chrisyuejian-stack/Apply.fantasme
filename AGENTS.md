@@ -13,3 +13,11 @@
 - 本地开发默认 AI 关闭。真实 AI、联网核实、Cloudflare D1 和 UI 人工操作未因本地测试通过就视为已验收。
 - 功能变更运行 npm test，按影响补充必要测试；检查构建。原始字节不变阶段运行 npm run verify:baseline；有意变更原始文件后在恢复记录/变更说明中解释差异，不更新历史哈希来让它通过。
 - 完成时说明改了什么、实际跑了哪些验证、哪些未验证。部署、推送、线上迁移遵循用户明确授权，不默认执行。
+
+## 多工具与发布协作约定
+
+- **角色分工**：GPT/Codex 负责业务开发与缺陷修复（走独立分支和 PR）；Antigravity 负责回归/E2E/性能测试、PR 审查与 `gh` 协调；Grok-Ops 担任只读巡检与发布观察员，不直接修改业务代码、不持有生产写密钥。
+- **GitHub 评论前缀**：共用仓库账号发评论时必须加角色前缀（如 `[Antigravity]`、`[Grok-Ops]`），避免身份混淆或自触发循环。
+- **Preview 触发**：通过 `gh workflow run deploy.yml -f environment=preview` 或 OWNER 在 PR 评论 `/deploy preview`（默认部署到 `fantasme-apply-test`，不执行任何 D1 迁移）。
+- **生产锁定红线**：在完成 `fantasme-academic` 线上代码、Bindings 与 D1 结构的逐项对齐核查并获得用户明确二次确认前，严禁将任何工作流指向生产项目或对线上 D1 执行写操作。
+

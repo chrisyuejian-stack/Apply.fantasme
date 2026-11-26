@@ -1,0 +1,90 @@
+name: Deploy Preview
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment (production is locked until live parity is verified)
+        required: true
+        default: preview
+        type: choice
+        options:
+          - preview
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+  deployments: write
+
+concurrency:
+  group: deploy-${{ github.event.issue.number || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  deploy-preview:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request != null &&
+        github.event.comment.author_association == 'OWNER' &&
+        (
+          startsWith(github.event.comment.body, '/deploy preview') ||
+          startsWith(github.event.comment.body, '[Antigravity] /deploy preview')
+        )
+      )
+    runs-on: ubuntu-latest
+    environment: preview
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Checkout PR head (when triggered by PR comment)
+        if: github.event_name == 'issue_comment'
+        run: |
+          git fetch origin "pull/${{ github.event.issue.number }}/head:pr-head"
+          git checkout pr-head
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Build and run baseline tests
+        run: npm test
+
+      - name: Check Cloudflare preview secrets
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CF_TOKEN" ] || [ -z "$CF_ACCOUNT" ]; then
+            echo "::error::Missing CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID in the 'preview' GitHub Environment secrets."
+            exit 1
+          fi
+
+      - name: Deploy dist/ to Cloudflare Pages (preview)
+        id: wrangler
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy dist --project-name=${{ vars.CLOUDFLARE_PAGES_PROJECT || 'fantasme-apply-test' }} --branch=preview
+
+      - name: Report preview URL to PR
+        if: github.event_name == 'issue_comment'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const url = process.env.DEPLOY_URL || '(check Actions log)';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `[CI-Deploy] Preview 已部署到 \`${{ vars.CLOUDFLARE_PAGES_PROJECT || 'fantasme-apply-test' }}\`：\n- URL: ${url}\n- Commit: \`${context.sha}\`\n- 数据库迁移: 未执行（默认关闭）`
+            });
+        env:
+          DEPLOY_URL: ${{ steps.wrangler.outputs.deployment-url }}
