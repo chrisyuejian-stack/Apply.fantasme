@@ -134,7 +134,7 @@
         const s = document.querySelector("#depField .checks");
         return void (s && (s.innerHTML = Is(e.value, "").map(([t, e]) => `<label><input type="checkbox" name="dependsOn" value="${t}"> ${a(e)}</label>`).join("") || '<span class="muted2 small">暂无可选项</span>'));
       }
-      if ("ver-mode" === s) return document.getElementById("verText").hidden = "text" !== e.value, void (document.getElementById("verFile").hidden = "file" !== e.value);
+      if ("ver-mode" === s) return document.getElementById("verText").hidden = "text" !== e.value, document.getElementById("verFile").hidden = "file" !== e.value, void (document.getElementById("verUpload").hidden = "upload" !== e.value);
       if ("doc-student-change" === s) {
         const t = bt.student(e.value);
         return document.getElementById("docFormBody").innerHTML = window.__docFormBody(e.value), void (document.getElementById("modalForm").elements.writerId.value = (t.writerIds || [])[0] || "");
