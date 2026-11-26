@@ -8225,15 +8225,18 @@ async function Qe(t, e, i, n, o, r) {
         if (i === "delete" || n) return a("\u6587\u4E66\u7248\u672C\u4FDD\u5B58\u540E\u4E0D\u80FD\u4FEE\u6539\u6216\u5220\u9664");
         let c = await r("documents", o.documentId);
         if (!c || c.studentId !== d) return a("\u6587\u4E66\u4E0D\u5B58\u5728");
+        if (c.archived === true) throw new I(409, '文书已归档，请先恢复后操作');
         if (!(c.writerId === s.id || De(t, c.studentId))) return a("\u53EA\u6709\u8D1F\u8D23\u7684\u6587\u4E66\u8001\u5E08\u6216\u987E\u95EE\u53EF\u4EE5\u63D0\u4EA4\u7248\u672C");
-        if (!["drafting", "revising"].includes(c.status)) return a("\u6587\u4E66\u5F53\u524D\u4E0D\u5728\u64B0\u5199 / \u4FEE\u6539\u9636\u6BB5");
+        if (!["drafting", "revising"].includes(c.status || 'drafting')) return a("\u6587\u4E66\u5F53\u524D\u4E0D\u5728\u64B0\u5199 / \u4FEE\u6539\u9636\u6BB5");
         let h = Object.assign(o, {
           createdBy: s.id,
           studentId: c.studentId
         });
         if (h.kind === "text") {
+          if (typeof h.text !== 'string') throw new I(400, '正文格式不正确');
+          h.text = h.text.trim();
           let y = Ln(h.text);
-          if (!h.text || y > 1e3 || h.text.length > 2e4) return a("\u5728\u7EBF\u6B63\u6587\u9700\u5728 1\u20131000 words \u4E4B\u95F4");
+          if (!h.text || y < 1 || y > 1e3 || h.text.length > 2e4) throw new I(400, "\u5728\u7EBF\u6B63\u6587\u9700\u5728 1\u20131000 words \u4E4B\u95F4");
           h.words = y, delete h.link;
         } else {
           if (h.kind = "file", !/^https?:\/\//i.test(h.link || "")) return a("\u6587\u4EF6\u94FE\u63A5\u5FC5\u987B\u4EE5 http:// \u6216 https:// \u5F00\u5934");
@@ -8282,6 +8285,7 @@ async function Qe(t, e, i, n, o, r) {
             status: o.status
           });
         }
+        if (n.archived === true && (n.status !== o.status || !xt(n.currentVersionId, o.currentVersionId))) throw new I(409, '文书已归档，请先恢复后操作');
         let c = n.writerId === s.id;
         if (ye(n, o, zt).length && !p) return a("\u53EA\u6709\u987E\u95EE\u6216\u4E3B\u7BA1\u53EF\u4EE5\u4FEE\u6539\u6587\u4E66\u7ACB\u9879\u4FE1\u606F");
         if (!xt(n.currentVersionId, o.currentVersionId)) {
@@ -8964,7 +8968,7 @@ async function fqDocumentAction(req, env, user, id, action) {
     if (user.role !== 'supervisor') throw new I(403, '只有申请主管可以在审核阶段修改正文');
     if (!['drafting','revising','advisor_review','supervisor_review','student_review'].includes(doc.status)) throw new I(409, '定稿文书须先重新打开修改');
     const value = String(b.text || '').trim(), words = Ln(value);
-    if (!value || value.length > 20000 || words > 1000) throw new I(400, '正文须为 1–1000 words，且不超过 20000 字符');
+    if (!value || words < 1 || value.length > 20000 || words > 1000) throw new I(400, '正文须为 1–1000 words，且不超过 20000 字符');
     const old = doc.currentVersionId ? await ue(env, 'versions', doc.currentVersionId) : null;
     if (old && old.text === value) throw new I(400, '正文与当前版本相同');
     const count = await env.DB.prepare("SELECT MAX(CAST(json_extract(data,'$.no') AS INTEGER)) AS n FROM records WHERE tbl='versions' AND json_extract(data,'$.documentId')=?").bind(id).first();
@@ -9235,12 +9239,17 @@ async function $n(t, e, i, n, o, r) {
     throw new I(400, "\u8BF7\u6C42\u5185\u5BB9\u4E0D\u662F\u6709\u6548\u7684 JSON");
   }
   if (!f || typeof f != "object" || f.id !== o) throw new I(400, "\u8BB0\u5F55\u7F16\u53F7\u4E0D\u4E00\u81F4");
-  let u = f._base;
+  const fqHasBase = Object.hasOwn(f, '_base');
+  let u = f._base, fqVersionParent;
   if (delete f._base, (n === "versions" || n === "reviews") && f.documentId) {
-    let l = await ue(e, "documents", f.documentId);
+    const parent = await e.DB.prepare("SELECT data FROM records WHERE tbl='documents' AND id=?").bind(f.documentId).first();
+    let l = parent ? JSON.parse(parent.data) : null;
     l && (f.studentId = l.studentId);
+    if (n === 'versions') fqVersionParent = parent?.data;
   }
-  if (a && u !== void 0 && u !== a.updatedAt) {
+  let c = await Qe(s, n, "put", a, f, d);
+  if (!c.ok) throw new I(403, c.error);
+  if (a && (!fqHasBase || (u ?? null) !== (a.updatedAt ?? null))) {
     let l = Be(s, n, a, {
       docs: {}
     });
@@ -9248,14 +9257,22 @@ async function $n(t, e, i, n, o, r) {
       current: l
     });
   }
-  let c = await Qe(s, n, "put", a, f, d);
-  if (!c.ok) throw new I(403, c.error);
   let h = c.record;
   h.createdAt = a?.createdAt || j(); h.updatedAt = new Date(Math.max(Date.now(), (Date.parse(a?.updatedAt)||0)+1)).toISOString();
-  if (n === 'documents' && a) {
-    const saved = await e.DB.prepare("UPDATE records SET data=?,updated_at=? WHERE tbl='documents' AND id=? AND data=?").bind(JSON.stringify(h),h.updatedAt,o,fqOriginal.data).run();
-    if (!saved.meta.changes) throw new I(409,'文书已被更新，请刷新后重试');
-  } else await Yt(e,n,h).run();
+  if (a) {
+    const saved = await e.DB.prepare("UPDATE records SET data=?,updated_at=? WHERE tbl=? AND id=? AND data=?").bind(JSON.stringify(h),h.updatedAt,n,o,fqOriginal.data).run();
+    if (!saved.meta.changes) throw new I(409,'记录已被更新，请刷新后重试');
+  } else {
+    try {
+      let saved;
+      if (n === 'versions') saved = await e.DB.prepare("INSERT INTO records(tbl,id,student_id,data,updated_at) SELECT ?,?,?,?,? WHERE EXISTS(SELECT 1 FROM records WHERE tbl='documents' AND id=? AND data=?)").bind(n,h.id,h.studentId,JSON.stringify(h),h.updatedAt,h.documentId,fqVersionParent).run();
+      else saved = await e.DB.prepare('INSERT INTO records(tbl,id,student_id,data,updated_at) VALUES(?,?,?,?,?)').bind(n,h.id,n === 'students' ? h.id : h.studentId || null,JSON.stringify(h),h.updatedAt).run();
+      if (!saved.meta.changes) throw new I(409,'关联文书已被更新，请刷新后重试');
+    } catch (error) {
+      if (/UNIQUE constraint/i.test(String(error.message))) throw new I(409,'记录已被创建，请刷新后重试');
+      throw error;
+    }
+  }
   await N(e, i.id, a ? "update" : "create", n, o);
   let y = n === "students" && !a ? await de(e, i) : s,
     w = {};
