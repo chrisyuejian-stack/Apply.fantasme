@@ -9176,7 +9176,9 @@ async function Xn(t, e) {
 }
 async function Jn(t, e) {
   let i = await de(t, e),
-    n = (await t.DB.prepare("SELECT tbl, data FROM records").all()).results,
+    n = (e.role === 'supervisor'
+      ? await t.DB.prepare('SELECT tbl, data FROM records').all()
+      : await t.DB.prepare("SELECT tbl, data FROM records WHERE student_id IN (SELECT value FROM json_each(?))" + (ve(e) ? " OR tbl='templates'" : '') + ' ORDER BY rowid').bind(JSON.stringify([...i.visible])).all()).results,
     o = Object.fromEntries(we.map(a => [a, []])),
     r = {};
   for (let a of n) if (a.tbl === "documents") {

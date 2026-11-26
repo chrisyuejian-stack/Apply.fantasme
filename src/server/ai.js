@@ -1555,10 +1555,14 @@ async function fqaiAuditAll(deps, user, scope) {
   const idx = deps.idx, today = fqaiDay();
   const rows = await deps.data.rows(['applications', 'submissions', 'rounds', 'tasks']);
   const ids = [...scope.manage];
-  const list = [];
+  const list = [], grouped = new Map();
+  for (const row of rows) {
+    const group = grouped.get(row.studentId) || [];
+    group.push(row); grouped.set(row.studentId, group);
+  }
   for (const sid of ids) {
     const s = scope.byId.get(sid); if (!s) continue;
-    const B = fqaiBundle(s, rows.filter(r => r.studentId === sid));
+    const B = fqaiBundle(s, grouped.get(sid) || []);
     if (!B.tasks.length) continue;
     const { issues } = fqaiAuditIssues(B, idx, today);
     const bad = issues.filter(i => i.level === 'bad'), warn = issues.filter(i => i.level === 'warn');
