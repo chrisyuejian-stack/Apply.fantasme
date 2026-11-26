@@ -35,7 +35,7 @@
 | 文件 | 写入者 |
 |---|---|
 | `src/server/parts/*`、`src/server/ai.js` | GPT（Claude 需先登记） |
-| `public/apply/app/*`（及 M1 后的 `src/client/`） | Claude |
+| `src/client/app/parts/*`、`public/apply/app/*`（app.js 为生成文件） | Claude |
 | `tests/`、`scripts/perf-bench.mjs`、`.github/workflows/` | Antigravity |
 | `docs/*`（除 testing/、recovery/） | Claude |
 
