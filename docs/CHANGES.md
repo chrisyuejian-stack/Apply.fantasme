@@ -9,3 +9,6 @@
 | 2026-11-26 | `src/server/bug-*.test.mjs` | 新增回归断言（不改 `tests/standalone.test.mjs`） | 同上 |
 
 后续每个有意修改基线文件的 PR，需在此追加一行：日期、文件、变更、PR。
+| 2026-11-26 | `public/apply/app/app.js` | BUG-11 `S()` 对非 http(s) 链接返回空串，渲染点不再输出 `href="#"`；BUG-12 进入 DIY 页面时过期（>15s）缓存重新拉取；BUG-09 前端 `doc-reopen` 改走原子 `/documents/:id/review` 接口 | PR #29/#33/#34 |
+| 2026-11-26 | `public/apply/app/app.css` | BUG-10 窄屏网格统一 `minmax(0,1fr)`、`.stack` 补 `min-width:0`，移动端保留全局搜索 | PR #36 |
+| 2026-11-26 | `tests/bug-*.test.mjs`、`tests/e2e/mobile_overflow.cjs` | 新增前端回归（源码级守卫 + 375px 浏览器检测，后者不在 `npm test` 内） | PR #29/#33/#34/#36 |
