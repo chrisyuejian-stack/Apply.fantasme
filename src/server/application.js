@@ -9042,10 +9042,16 @@ async function Wn(t, e, i) {
     "Cache-Control": "private, no-cache"
   }) : Te(await e.ASSETS.fetch(t), {"Cache-Control":"no-cache"});
 }
+function fqApplicationSameOrigin(request) {
+  if (request.method === 'GET' || request.method === 'HEAD') return;
+  const origin = request.headers.get('Origin');
+  if ((origin !== null && origin !== new URL(request.url).origin) || request.headers.get('Sec-Fetch-Site') === 'cross-site') throw new I(403, '请求来源不一致');
+}
 async function Yn(t, e, i) {
   let n = i.pathname.replace(/^\/api/, ""),
     o = t.method;
   if (o !== "GET" && t.headers.get("X-FQ") !== "1") throw new I(403, "\u8BF7\u6C42\u88AB\u62D2\u7EDD");
+  fqApplicationSameOrigin(t);
   if (n === "/setup-status" && o === "GET") {
     let d = await e.DB.prepare("SELECT COUNT(*) AS n FROM users").first();
     return D({
