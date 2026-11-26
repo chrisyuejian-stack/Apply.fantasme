@@ -2,6 +2,10 @@
 
 适用于 Codex(GPT)、Claude、Antigravity、Grok-Ops 及人工开发者。本文件是**技术红线的唯一来源**，也是总入口。
 
+**先确认你是谁，再读对应入口**：
+- Claude → [CLAUDE.md](CLAUDE.md)；Antigravity(Gemini) → [GEMINI.md](GEMINI.md)；Grok-Ops(Cursor) → `.cursor/rules/grok-ops.mdc`。
+- **GPT/Codex**：后端缺陷修复与按设计稿实现。只改已认领的 `src/server/` 文件，走 `gpt/*` 分支，一个 Bug 一个 PR，仅跑 `npm test` 与本次新增测试，评论加 `[GPT]` 前缀；迁移窗口内 PR 保持草稿不合并；高风险项（BUG-02/03/05、bootstrap）按 `docs/design/high-risk-fixes.md` 实现。主人说「开工」或「做 issue #N」时查看指派给 `role:gpt` 的 issue。
+
 **开工只读你角色对应的短文件，不要通读全仓**（省 Token）：
 - 所有角色：本文件 + [docs/collab.md](docs/collab.md) + [docs/status.md](docs/status.md)
 - 按需追加：发布/D1 → [docs/deploy.md](docs/deploy.md)；验收 → [docs/acceptance.md](docs/acceptance.md)；定位代码 → [docs/CODE_MAP.md](docs/CODE_MAP.md)；路线 → [docs/ROADMAP.md](docs/ROADMAP.md)；恢复证据 → docs/recovery/REPORT.md

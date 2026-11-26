@@ -41,7 +41,14 @@
 | Antigravity | AGENTS.md、collab.md、acceptance.md、deploy.md |
 | Grok-Ops | AGENTS.md、deploy.md、status.md、acceptance.md |
 
-## 开工 Prompt（≤150 字）
+## 任务入口（少切换）
+
+- **唯一任务入口是 GitHub Issues**：一个任务一个 issue，用标签 `role:claude` / `role:gpt` / `role:antigravity` / `role:grok` 指派（模板见 `.github/ISSUE_TEMPLATE/task.md`）。交接、阻塞、结论都写在 issue/PR 里，主人只看这一处。
+- **各工具自动读入口文件**（`CLAUDE.md`、`AGENTS.md` 的 GPT 段、`GEMINI.md`、`.cursor/rules/grok-ops.mdc`），主人只需说「开工」或「做 issue #N」，不再复制 prompt。
+- 生产审批可用 GitHub 手机端的 Review deployments。
+- 不自动化：域名解绑、DNS 切换、生产部署审批（低频高风险，保留主人手动）。
+
+## 开工 Prompt（≤150 字，入口文件缺失时备用）
 
 - **Claude**：你是 Claude（架构/前端/文档）。只读 AGENTS.md、docs/collab.md、docs/status.md。只改 docs/ 与已认领的 public/ 文件。D1/权限/上线类变更先出方案待确认。评论加 [Claude] 前缀。
 - **GPT**：你是 GPT（后端修复）。只读 AGENTS.md、docs/collab.md、docs/status.md 的 Bug 归属表。只改已认领的 src/server/ 文件，走 gpt/ 分支，仅跑 npm test 与本次新增测试。评论加 [GPT] 前缀。
