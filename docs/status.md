@@ -5,8 +5,8 @@
 ## 里程碑
 - [x] v2.2.1 恢复基线合入 main（PR #1）
 - [x] Preview 部署工作流（PR #2，仅 preview）
-- [x] 全面审计报告（分支 `test/apply-v2.2.1-audit`，**尚未合入 main**）
-- [ ] 本协作文档体系（本 PR）
+- [x] 全面审计报告与回归/E2E/性能套件已合入 main（PR #4）
+- [x] 协作文档体系已合入 main（PR #3）
 - [ ] 生产对齐核查（Grok-Ops，**阻塞上线与 D1 变更**）
 - [ ] 缺陷修复首轮（GPT，截至本页更新时远端无其分支/PR）
 
@@ -16,11 +16,12 @@
 | Preview `fantasme-apply-test` | 工作流就绪，最近一次部署：未记录 |
 | Production `fantasme-academic` | **锁定**。线上与恢复基线未对齐，11 月 1 日部署待核对 |
 
-## 阻塞项 / 待主人决策
-1. 是否将 `test/apply-v2.2.1-audit` 合入 main（建议合入；回归探针在 `tests/regression/`，不影响 `npm test`）。
-2. `deploy.yml` 评论触发是否收紧（建议由 Antigravity 另提 PR）。
-3. Grok 的 Cloudflare 只读权限能否看到 D1 表结构与 Pages 配置；不能则由主人导出 schema（不含数据）。
+## 阻塞项 / 待办
+1. ~~合入审计分支~~ 已完成（PR #4）。
+2. **Antigravity**：另提 PR 收紧 `deploy.yml` 评论触发（仅限 OWNER 本人的 `/deploy preview`，拒绝带角色前缀的评论）。
+3. **Grok-Ops**：已确认可读 D1 表结构与 Pages 配置，开始填写 deploy.md 的生产对齐核查表；若发现读不到，由主人给出补充 prompt。
 4. 本地验证用 Node 22.23.5，`.node-version` 要求 24，Node 24 下需 Antigravity 复验。
+5. GPT 开始修复前先读本页文件认领表；截至更新时远端无其分支/PR。
 
 ## Bug 归属（证据见 `git show origin/test/apply-v2.2.1-audit:docs/testing/TEST_REPORT.md`）
 | 编号 | 严重度 | 摘要 | 负责 | 状态 |
