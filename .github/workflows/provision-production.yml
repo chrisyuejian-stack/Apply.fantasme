@@ -2,6 +2,16 @@ name: Provision Production (fantasme-apply)
 
 on:
   workflow_dispatch:
+    inputs:
+      scope:
+        description: Provisioning target scope (both = production + preview R2)
+        required: true
+        default: both
+        type: choice
+        options:
+          - both
+          - production-only
+          - preview-only
 
 permissions:
   contents: read
@@ -23,35 +33,46 @@ jobs:
         run: |
           set -euo pipefail
           PROJECT_NAME="fantasme-apply"
+          PREVIEW_PROJECT="fantasme-apply-test"
           D1_NAME="fantasme-apply-prod"
+          PROD_R2="fantasme-apply-files"
+          PREVIEW_R2="fantasme-apply-files-preview"
 
-          if [ "$PROJECT_NAME" = "fantasme-academic" ] || [ "$D1_NAME" = "fq-apply" ]; then
-            echo "::error::Forbidden legacy target detected."
-            exit 1
-          fi
+          for forbidden in fantasme-academic fq-apply fq-edu fantasme-site-db; do
+            if [ "$PROJECT_NAME" = "$forbidden" ] || [ "$PREVIEW_PROJECT" = "$forbidden" ] || [ "$D1_NAME" = "$forbidden" ]; then
+              echo "::error::Forbidden legacy target detected."
+              exit 1
+            fi
+          done
           if [ -z "$CF_TOKEN" ] || [ -z "$CF_ACCOUNT" ]; then
             echo "::error::Missing CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID in the 'production' GitHub Environment secrets."
             exit 1
           fi
+          echo "Targets validated: prod=${PROJECT_NAME} (${D1_NAME}, ${PROD_R2}), preview=${PREVIEW_PROJECT} (${PREVIEW_R2})."
 
       - name: Setup Node.js 24
         uses: actions/setup-node@v4
         with:
           node-version: '24'
 
-      - name: Provision D1 database, Pages project, and APPLY_DB binding (idempotent)
+      - name: Provision D1, R2 buckets, and Pages bindings (idempotent)
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PROVISION_SCOPE: ${{ github.event.inputs.scope || 'both' }}
         run: |
           set -euo pipefail
           node <<'EOF'
           const accountId = process.env.CF_ACCOUNT;
           const token = process.env.CF_TOKEN;
+          const scope = process.env.PROVISION_SCOPE || 'both';
           const PROJECT = 'fantasme-apply';
+          const PREVIEW_PROJECT = 'fantasme-apply-test';
           const D1_NAME = 'fantasme-apply-prod';
+          const PROD_R2 = 'fantasme-apply-files';
+          const PREVIEW_R2 = 'fantasme-apply-files-preview';
 
-          if (PROJECT !== 'fantasme-apply' || D1_NAME !== 'fantasme-apply-prod') {
+          if (PROJECT !== 'fantasme-apply' || PREVIEW_PROJECT !== 'fantasme-apply-test' || D1_NAME !== 'fantasme-apply-prod') {
             throw new Error('Forbidden target configuration');
           }
 
@@ -68,7 +89,84 @@ jobs:
             return { status: res.status, data };
           }
 
-          async function main() {
+          async function ensureR2Bucket(bucketName) {
+            const check = await cf('GET', `/r2/buckets/${encodeURIComponent(bucketName)}`);
+            if (check.status === 200 && check.data?.success) {
+              console.log(`R2 bucket '${bucketName}' already exists, skipping creation.`);
+              return;
+            }
+            if (check.status === 404) {
+              const created = await cf('POST', '/r2/buckets', { name: bucketName });
+              if (!created.data?.success) {
+                throw new Error(`R2 bucket create failed for '${bucketName}' (${created.status}): ${JSON.stringify(created.data?.errors || [])}. Ensure production CLOUDFLARE_API_TOKEN has temporary 'R2 Edit'.`);
+              }
+              console.log(`Created R2 bucket '${bucketName}'.`);
+              return;
+            }
+            throw new Error(`R2 bucket lookup failed for '${bucketName}' (${check.status}): ${JSON.stringify(check.data?.errors || [])}. Ensure production CLOUDFLARE_API_TOKEN has 'R2 Edit'.`);
+          }
+
+          function snapshotConfig(cfg) {
+            const d1 = {};
+            for (const [k, v] of Object.entries(cfg?.d1_databases || {})) {
+              if (v?.id) d1[k] = v.id;
+            }
+            const r2 = {};
+            for (const [k, v] of Object.entries(cfg?.r2_buckets || {})) {
+              if (v?.name) r2[k] = v.name;
+            }
+            const varKeys = Object.keys(cfg?.env_vars || {}).sort();
+            return { d1, r2, varKeys };
+          }
+
+          function assertPreserved(projectName, envName, before, after) {
+            for (const [k, id] of Object.entries(before.d1)) {
+              if (after.d1[k] !== id) {
+                throw new Error(`${projectName}.${envName} D1 binding '${k}' changed unexpectedly: expected ${id}, got ${after.d1[k] || 'missing'}`);
+              }
+            }
+            for (const k of before.varKeys) {
+              if (!after.varKeys.includes(k)) {
+                throw new Error(`${projectName}.${envName} env_var key '${k}' went missing after PATCH!`);
+              }
+            }
+          }
+
+          async function ensurePagesR2Binding(projectName, envName, bindingName, bucketName) {
+            const projRes = await cf('GET', `/pages/projects/${projectName}`);
+            if (projRes.status !== 200 || !projRes.data?.success) {
+              throw new Error(`Pages project '${projectName}' lookup failed (${projRes.status}): ${JSON.stringify(projRes.data?.errors || [])}`);
+            }
+            const cfg = projRes.data.result?.deployment_configs?.[envName] || {};
+            const before = snapshotConfig(cfg);
+            if (before.r2[bindingName] === bucketName) {
+              console.log(`Pages '${projectName}' ${envName}.${bindingName} already bound to '${bucketName}', skipping patch.`);
+              return;
+            }
+            const mergedR2 = {};
+            for (const [k, name] of Object.entries(before.r2)) mergedR2[k] = { name };
+            mergedR2[bindingName] = { name: bucketName };
+
+            const patchRes = await cf('PATCH', `/pages/projects/${projectName}`, {
+              deployment_configs: {
+                [envName]: {
+                  r2_buckets: mergedR2,
+                },
+              },
+            });
+            if (!patchRes.data?.success) {
+              throw new Error(`Pages ${projectName}.${envName} R2 binding PATCH failed (${patchRes.status}): ${JSON.stringify(patchRes.data?.errors || [])}`);
+            }
+            const verifyRes = await cf('GET', `/pages/projects/${projectName}`);
+            const after = snapshotConfig(verifyRes.data?.result?.deployment_configs?.[envName] || {});
+            if (after.r2[bindingName] !== bucketName) {
+              throw new Error(`${projectName}.${envName}.${bindingName} verification mismatch: expected '${bucketName}', got '${after.r2[bindingName] || ''}'`);
+            }
+            assertPreserved(projectName, envName, before, after);
+            console.log(`Bound Pages '${projectName}' ${envName}.${bindingName} -> '${bucketName}' (preserved D1 keys=${Object.keys(after.d1).join(',') || 'none'}, env keys=${after.varKeys.join(',') || 'none'}).`);
+          }
+
+          async function provisionProduction() {
             // 1. Ensure D1 database fantasme-apply-prod exists (idempotent)
             const listRes = await cf('GET', `/d1/database?name=${encodeURIComponent(D1_NAME)}&per_page=100`);
             if (!listRes.data?.success) {
@@ -104,16 +202,14 @@ jobs:
               throw new Error(`Pages project lookup failed (${projRes.status}): ${JSON.stringify(projRes.data?.errors || [])}`);
             }
 
-            // 3. Ensure production D1 binding APPLY_DB -> fantasme-apply-prod (idempotent)
-            const currentProdD1 = projRes.data?.result?.deployment_configs?.production?.d1_databases || {};
-            const currentId = currentProdD1.APPLY_DB?.id || '';
-            if (currentId === db.uuid) {
-              console.log(`Pages binding 'APPLY_DB' already points to '${D1_NAME}' (${db.uuid}), skipping patch.`);
+            // 3. Ensure production D1 binding APPLY_DB -> fantasme-apply-prod (preserve env_vars & R2)
+            const prodCfg = projRes.data?.result?.deployment_configs?.production || {};
+            const before = snapshotConfig(prodCfg);
+            if (before.d1.APPLY_DB === db.uuid) {
+              console.log(`Pages binding '${PROJECT}' production.APPLY_DB already points to '${D1_NAME}' (${db.uuid}), skipping patch.`);
             } else {
               const mergedD1 = {};
-              for (const [k, v] of Object.entries(currentProdD1)) {
-                if (v && v.id) mergedD1[k] = { id: v.id };
-              }
+              for (const [k, id] of Object.entries(before.d1)) mergedD1[k] = { id };
               mergedD1.APPLY_DB = { id: db.uuid };
 
               const patchRes = await cf('PATCH', `/pages/projects/${PROJECT}`, {
@@ -127,12 +223,48 @@ jobs:
                 throw new Error(`Pages binding update failed (${patchRes.status}): ${JSON.stringify(patchRes.data?.errors || [])}`);
               }
               const verifyRes = await cf('GET', `/pages/projects/${PROJECT}`);
-              const verifiedId = verifyRes.data?.result?.deployment_configs?.production?.d1_databases?.APPLY_DB?.id || '';
-              if (verifiedId !== db.uuid) {
-                throw new Error(`APPLY_DB binding verification mismatch: expected ${db.uuid}, got ${verifiedId}`);
+              const after = snapshotConfig(verifyRes.data?.result?.deployment_configs?.production || {});
+              if (after.d1.APPLY_DB !== db.uuid) {
+                throw new Error(`APPLY_DB binding verification mismatch: expected ${db.uuid}, got ${after.d1.APPLY_DB || ''}`);
               }
+              assertPreserved(PROJECT, 'production', before, after);
               console.log(`Bound Pages '${PROJECT}' production.APPLY_DB -> '${D1_NAME}' (${db.uuid}).`);
             }
+
+            // 4. Ensure R2 bucket fantasme-apply-files and production.FILES binding
+            await ensureR2Bucket(PROD_R2);
+            await ensurePagesR2Binding(PROJECT, 'production', 'FILES', PROD_R2);
+          }
+
+          async function provisionPreview() {
+            const projRes = await cf('GET', `/pages/projects/${PREVIEW_PROJECT}`);
+            if (projRes.status !== 200 || !projRes.data?.success) {
+              throw new Error(`Preview Pages project '${PREVIEW_PROJECT}' lookup failed (${projRes.status}): ${JSON.stringify(projRes.data?.errors || [])}`);
+            }
+            await ensureR2Bucket(PREVIEW_R2);
+            await ensurePagesR2Binding(PREVIEW_PROJECT, 'preview', 'FILES', PREVIEW_R2);
+            if (projRes.data.result?.deployment_configs?.production?.d1_databases?.APPLY_DB?.id) {
+              await ensurePagesR2Binding(PREVIEW_PROJECT, 'production', 'FILES', PREVIEW_R2);
+            }
+          }
+
+          async function printSummary() {
+            const checks = [];
+            if (scope === 'both' || scope === 'production-only') checks.push([PROJECT, ['production']]);
+            if (scope === 'both' || scope === 'preview-only') checks.push([PREVIEW_PROJECT, ['preview', 'production']]);
+            for (const [proj, envs] of checks) {
+              const r = await cf('GET', `/pages/projects/${proj}`);
+              for (const envName of envs) {
+                const snap = snapshotConfig(r.data?.result?.deployment_configs?.[envName] || {});
+                console.log(`[Summary] ${proj}.${envName}: D1=${JSON.stringify(Object.keys(snap.d1))} R2=${JSON.stringify(snap.r2)} envKeys=${JSON.stringify(snap.varKeys)}`);
+              }
+            }
+          }
+
+          async function main() {
+            if (scope === 'both' || scope === 'production-only') await provisionProduction();
+            if (scope === 'both' || scope === 'preview-only') await provisionPreview();
+            await printSummary();
           }
 
           main().catch((err) => {
