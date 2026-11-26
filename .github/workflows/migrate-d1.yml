@@ -43,7 +43,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "${{ runner.temp }}/wrangler-cli"
-          npm install --prefix "${{ runner.temp }}/wrangler-cli" --no-save wrangler@3.90.0 --silent
+          npm install --prefix "${{ runner.temp }}/wrangler-cli" --no-save wrangler@4 --silent
           echo "${{ runner.temp }}/wrangler-cli/node_modules/.bin" >> "$GITHUB_PATH"
 
       - name: Export fq-apply and import into fantasme-apply-prod (runner-local only, no data logged)
@@ -60,6 +60,7 @@ jobs:
           const fs = require('node:fs');
           const path = require('node:path');
           const { execFileSync } = require('node:child_process');
+          const { DatabaseSync } = require('node:sqlite');
 
           const SOURCE_DB = 'fq-apply';
           const TARGET_DB = 'fantasme-apply-prod';
@@ -74,7 +75,7 @@ jobs:
             const out = execFileSync('wrangler', args, {
               encoding: 'utf8',
               stdio: ['ignore', 'pipe', 'pipe'],
-              maxBuffer: 64 * 1024 * 1024,
+              maxBuffer: 128 * 1024 * 1024,
             });
             return captureJson ? JSON.parse(out) : out;
           }
@@ -88,66 +89,207 @@ jobs:
             return first?.results || [];
           }
 
-          // Check how many of the 14 baseline tables already exist in fantasme-apply-prod
-          const existingList = queryRows(
+          function splitSqlStatements(sql) {
+            const stmts = [];
+            let cur = '';
+            let inSingle = false;
+            let inDouble = false;
+            let inLineComment = false;
+            for (let i = 0; i < sql.length; i++) {
+              const ch = sql[i];
+              const next = sql[i + 1];
+              if (inLineComment) {
+                cur += ch;
+                if (ch === '\n') inLineComment = false;
+                continue;
+              }
+              if (!inSingle && !inDouble && ch === '-' && next === '-') {
+                inLineComment = true;
+                cur += ch;
+                continue;
+              }
+              if (!inDouble && ch === "'") {
+                cur += ch;
+                if (inSingle && next === "'") {
+                  cur += next;
+                  i++;
+                } else {
+                  inSingle = !inSingle;
+                }
+                continue;
+              }
+              if (!inSingle && ch === '"') {
+                inDouble = !inDouble;
+                cur += ch;
+                continue;
+              }
+              if (!inSingle && !inDouble && ch === ';') {
+                const t = cur.trim();
+                if (t) stmts.push(t + ';');
+                cur = '';
+                continue;
+              }
+              cur += ch;
+            }
+            const tail = cur.trim();
+            if (tail) stmts.push(tail + ';');
+            return stmts;
+          }
+
+          function sqlLit(v) {
+            if (v === null || v === undefined) return 'NULL';
+            if (typeof v === 'number' || typeof v === 'bigint') return String(v);
+            if (v instanceof Uint8Array) return "X'" + Buffer.from(v).toString('hex') + "'";
+            return "'" + String(v).replace(/'/g, "''") + "'";
+          }
+
+          function splitUtf8Chunks(str, maxBytes = 30000) {
+            const chunks = [];
+            let cur = '';
+            let curBytes = 0;
+            for (const ch of str) {
+              const b = Buffer.byteLength(ch, 'utf8');
+              if (curBytes + b > maxBytes && cur.length > 0) {
+                chunks.push(cur);
+                cur = ch;
+                curBytes = b;
+              } else {
+                cur += ch;
+                curBytes += b;
+              }
+            }
+            if (cur.length > 0 || chunks.length === 0) chunks.push(cur);
+            return chunks;
+          }
+
+          // Inspect existing tables on source and target
+          const srcTables = new Set(
+            queryRows(
+              SOURCE_DB,
+              "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '_cf_%' AND name != 'sqlite_sequence';"
+            ).map((r) => r.name)
+          );
+          const dstTablesList = queryRows(
             TARGET_DB,
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '_cf_%' AND name != 'sqlite_sequence';"
           ).map((r) => r.name);
-          const existingSet = new Set(existingList);
-          const targetHasSchema = TABLES.every((t) => existingSet.has(t));
+          const dstTables = new Set(dstTablesList);
+
+          const dstIndexes = new Set(
+            queryRows(
+              TARGET_DB,
+              "SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%';"
+            ).map((r) => r.name)
+          );
+
+          const neededTables = TABLES.filter((t) => srcTables.has(t));
+          const missingTables = neededTables.filter((t) => !dstTables.has(t));
 
           const rawSqlPath = path.join(WORK_DIR, 'export.sql');
           const importSqlPath = path.join(WORK_DIR, 'import.sql');
 
-          if (targetHasSchema) {
-            console.log(`Target '${TARGET_DB}' already has all 14 tables; exporting data-only (--no-schema, zero DDL).`);
-            runWrangler(['d1', 'export', SOURCE_DB, '--remote', '--no-schema', '--output', rawSqlPath]);
-          } else {
-            console.log(`Target '${TARGET_DB}' missing schema (${existingSet.size} user tables present); exporting source schema + data.`);
-            runWrangler(['d1', 'export', SOURCE_DB, '--remote', '--output', rawSqlPath]);
+          console.log(
+            `Source '${SOURCE_DB}' has ${neededTables.length} baseline tables; target '${TARGET_DB}' missing ${missingTables.length} tables.`
+          );
+
+          // Export full source dump into runner memory DB for safe statement splitting & chunking
+          runWrangler(['d1', 'export', SOURCE_DB, '--remote', '--output', rawSqlPath]);
+          const raw = fs.readFileSync(rawSqlPath, 'utf8');
+          fs.unlinkSync(rawSqlPath);
+
+          const mem = new DatabaseSync(':memory:');
+          for (const stmt of splitSqlStatements(raw)) {
+            const s = stmt.trim();
+            if (/^(BEGIN TRANSACTION|COMMIT)\s*;?$/i.test(s)) continue;
+            if (/\b_cf_KV\b/i.test(s)) continue;
+            if (/^CREATE\s+TABLE\s+["'`]?sqlite_sequence["'`]?\b/i.test(s)) continue;
+            mem.exec(s);
           }
 
-          const raw = fs.readFileSync(rawSqlPath, 'utf8');
-          const lines = raw.split(/\r?\n/);
           const outLines = [];
 
-          if (existingList.length > 0) {
-            // Clear any pre-existing baseline rows in target only for exact idempotent mirror sync (DML only)
-            for (const tbl of existingList) {
-              if (TABLES.includes(tbl)) outLines.push(`DELETE FROM "${tbl}";`);
-            }
-            if (existingSet.has('sqlite_sequence')) {
-              outLines.push('DELETE FROM "sqlite_sequence";');
+          // 1. Only create tables/indexes missing on target (zero DDL when already provisioned)
+          if (missingTables.length > 0) {
+            const schemaRows = mem
+              .prepare(
+                "SELECT type, name, sql FROM sqlite_master WHERE type IN ('table','index') AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND sql IS NOT NULL ORDER BY CASE type WHEN 'table' THEN 0 ELSE 1 END, rowid"
+              )
+              .all();
+            for (const item of schemaRows) {
+              if (item.type === 'table' && !dstTables.has(item.name) && TABLES.includes(item.name)) {
+                outLines.push(item.sql.replace(/^CREATE\s+TABLE\s+(?!IF\s+NOT\s+EXISTS\b)/i, 'CREATE TABLE IF NOT EXISTS ') + ';');
+              } else if (item.type === 'index' && !dstIndexes.has(item.name)) {
+                outLines.push(item.sql.replace(/^CREATE\s+INDEX\s+(?!IF\s+NOT\s+EXISTS\b)/i, 'CREATE INDEX IF NOT EXISTS ') + ';');
+              }
             }
           }
 
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed) continue;
-            if (/^(BEGIN TRANSACTION|COMMIT)\s*;?$/i.test(trimmed)) continue;
-            if (/\b_cf_KV\b/i.test(trimmed)) continue;
-            if (/^CREATE\s+TABLE\s+["'`]?sqlite_sequence["'`]?\b/i.test(trimmed)) continue;
+          // 2. Clear existing target rows (DML only) for idempotent exact sync
+          for (const tbl of dstTablesList) {
+            if (TABLES.includes(tbl)) outLines.push(`DELETE FROM "${tbl}";`);
+          }
+          const hasDstSeq = queryRows(
+            TARGET_DB,
+            "SELECT COUNT(*) AS c FROM sqlite_master WHERE type='table' AND name='sqlite_sequence';"
+          )[0]?.c > 0;
+          if (hasDstSeq) {
+            outLines.push('DELETE FROM "sqlite_sequence";');
+          }
 
-            // If target had missing/partial schema, make source CREATE TABLE/INDEX idempotent
-            if (!targetHasSchema) {
-              if (/^CREATE\s+TABLE\s+(?!IF\s+NOT\s+EXISTS\b)/i.test(trimmed)) {
-                outLines.push(trimmed.replace(/^CREATE\s+TABLE\s+/i, 'CREATE TABLE IF NOT EXISTS '));
+          // 3. Emit rows keeping every SQL statement strictly <= 75 KB (< 100 KB D1 SQLITE_TOOBIG limit)
+          for (const tbl of neededTables) {
+            const cols = mem.prepare(`PRAGMA table_info("${tbl}")`).all();
+            const pks = cols.filter((c) => c.pk > 0).sort((a, b) => a.pk - b.pk).map((c) => c.name);
+            const colList = cols.map((c) => `"${c.name}"`).join(', ');
+
+            for (const row of mem.prepare(`SELECT * FROM "${tbl}"`).iterate()) {
+              const fullStmt = `INSERT INTO "${tbl}" (${colList}) VALUES (${cols.map((c) => sqlLit(row[c.name])).join(', ')});`;
+              if (Buffer.byteLength(fullStmt, 'utf8') <= 70000) {
+                outLines.push(fullStmt);
                 continue;
               }
-              if (/^CREATE\s+INDEX\s+(?!IF\s+NOT\s+EXISTS\b)/i.test(trimmed)) {
-                outLines.push(trimmed.replace(/^CREATE\s+INDEX\s+/i, 'CREATE INDEX IF NOT EXISTS '));
-                continue;
+              const whereClause = pks.length
+                ? pks.map((pk) => `"${pk}" = ${sqlLit(row[pk])}`).join(' AND ')
+                : null;
+              if (!whereClause) {
+                throw new Error(`Oversized row in table '${tbl}' without primary key cannot be chunked.`);
               }
-              if (/^INSERT\s+INTO\s+["'`]?sqlite_sequence["'`]?\b/i.test(trimmed)) {
-                const m = trimmed.match(/VALUES\s*\(\s*'([^']+)'\s*,/i);
-                if (m) outLines.push(`DELETE FROM sqlite_sequence WHERE name='${m[1].replace(/'/g, "''")}';`);
+              const firstVals = [];
+              const updates = [];
+              for (const c of cols) {
+                const v = row[c.name];
+                if (typeof v === 'string' && !pks.includes(c.name) && Buffer.byteLength(v, 'utf8') > 30000) {
+                  const chunks = splitUtf8Chunks(v, 30000);
+                  firstVals.push(sqlLit(chunks[0]));
+                  for (let i = 1; i < chunks.length; i++) {
+                    updates.push(
+                      `UPDATE "${tbl}" SET "${c.name}" = COALESCE("${c.name}", '') || ${sqlLit(chunks[i])} WHERE ${whereClause};`
+                    );
+                  }
+                } else {
+                  firstVals.push(sqlLit(v));
+                }
+              }
+              outLines.push(`INSERT INTO "${tbl}" (${colList}) VALUES (${firstVals.join(', ')});`);
+              outLines.push(...updates);
+            }
+          }
+
+          // 4. Preserve AUTOINCREMENT sequence counters if present
+          const memSeqExists = mem
+            .prepare("SELECT COUNT(*) AS c FROM sqlite_master WHERE type='table' AND name='sqlite_sequence';")
+            .get().c > 0;
+          if (memSeqExists) {
+            for (const seqRow of mem.prepare('SELECT name, seq FROM sqlite_sequence').all()) {
+              if (TABLES.includes(seqRow.name)) {
+                outLines.push(`DELETE FROM "sqlite_sequence" WHERE "name" = ${sqlLit(seqRow.name)};`);
+                outLines.push(`INSERT INTO "sqlite_sequence" ("name", "seq") VALUES (${sqlLit(seqRow.name)}, ${Number(seqRow.seq)});`);
               }
             }
-            outLines.push(line);
           }
 
           fs.writeFileSync(importSqlPath, outLines.join('\n') + '\n', { mode: 0o600 });
-          fs.unlinkSync(rawSqlPath);
+          console.log(`Prepared ${outLines.length} sanitized SQL statements for '${TARGET_DB}'.`);
 
           try {
             execFileSync(
@@ -158,7 +300,7 @@ jobs:
           } catch (err) {
             const safeErr = String(err.stderr || err.message || '')
               .split(/\r?\n/)
-              .filter((l) => !/\b(INSERT|VALUES)\b/i.test(l))
+              .filter((l) => !/\b(INSERT|UPDATE|VALUES)\b/i.test(l))
               .slice(-15)
               .join('\n');
             throw new Error(`D1 import failed (exit=${err.status ?? 'unknown'}):\n${safeErr}`);
@@ -168,14 +310,15 @@ jobs:
 
       - name: Drift check (row counts + records max(updated_at) + audit max(id))
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           set -euo pipefail
           node <<'EOF'
           const fs = require('node:fs');
-          const { execFileSync } = require('node:child_process');
 
+          const accountId = process.env.CF_ACCOUNT;
+          const token = process.env.CF_TOKEN;
           const SOURCE_DB = 'fq-apply';
           const TARGET_DB = 'fantasme-apply-prod';
           const TABLES = [
@@ -184,49 +327,92 @@ jobs:
             'fq_ai_log', 'fq_ai_usage', 'fq_ai_page_cache', 'fq_ai_feedback', 'fq_ai_reqdb_snap'
           ];
 
-          function metricsOf(dbName) {
-            const parts = TABLES.map((t) => `SELECT '${t}' AS k, CAST(COUNT(*) AS TEXT) AS v FROM "${t}"`);
-            parts.push(`SELECT 'records_max_updated_at' AS k, COALESCE(MAX(updated_at), '') AS v FROM "records"`);
-            parts.push(`SELECT 'audit_max_id' AS k, CAST(COALESCE(MAX(id), 0) AS TEXT) AS v FROM "audit"`);
-            const sql = parts.join(' UNION ALL ') + ';';
+          async function cf(method, path, body) {
+            const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}${path}`, {
+              method,
+              headers: {
+                Authorization: `Bearer ${token}`,
+                'Content-Type': 'application/json',
+              },
+              body: body === undefined ? undefined : JSON.stringify(body),
+            });
+            const data = await res.json();
+            if (!res.ok || !data?.success) {
+              throw new Error(`Cloudflare API ${method} ${path} failed (${res.status}): ${JSON.stringify(data?.errors || [])}`);
+            }
+            return data.result;
+          }
 
-            const out = execFileSync(
-              'wrangler',
-              ['d1', 'execute', dbName, '--remote', '--yes', '--json', '--command', sql],
-              { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
+          async function dbId(name) {
+            const list = await cf('GET', `/d1/database?name=${encodeURIComponent(name)}&per_page=100`);
+            const found = (list || []).find((d) => d.name === name);
+            if (!found) throw new Error(`D1 database '${name}' not found`);
+            return found.uuid;
+          }
+
+          async function queryOne(uuid, sql) {
+            const res = await cf('POST', `/d1/database/${uuid}/query`, { sql });
+            const first = Array.isArray(res) ? res[0] : res;
+            return first?.results || [];
+          }
+
+          async function metricsOf(name) {
+            const uuid = await dbId(name);
+            const tbls = new Set(
+              (await queryOne(uuid, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '_cf_%' AND name != 'sqlite_sequence';")).map(
+                (r) => r.name
+              )
             );
-            const parsed = JSON.parse(out);
-            const first = Array.isArray(parsed) ? parsed[0] : parsed;
             const map = new Map();
-            for (const row of first?.results || []) {
-              map.set(row.k, String(row.v ?? ''));
+            for (const t of TABLES) {
+              if (!tbls.has(t)) {
+                map.set(t, '(absent)');
+              } else {
+                const r = await queryOne(uuid, `SELECT CAST(COUNT(*) AS TEXT) AS v FROM "${t}";`);
+                map.set(t, String(r[0]?.v ?? '0'));
+              }
+            }
+            if (tbls.has('records')) {
+              const r = await queryOne(uuid, 'SELECT COALESCE(MAX(updated_at), \'\') AS v FROM "records";');
+              map.set('records_max_updated_at', String(r[0]?.v ?? ''));
+            }
+            if (tbls.has('audit')) {
+              const r = await queryOne(uuid, 'SELECT CAST(COALESCE(MAX(id), 0) AS TEXT) AS v FROM "audit";');
+              map.set('audit_max_id', String(r[0]?.v ?? '0'));
             }
             return map;
           }
 
-          const src = metricsOf(SOURCE_DB);
-          const dst = metricsOf(TARGET_DB);
-          let drift = 0;
+          async function main() {
+            const src = await metricsOf(SOURCE_DB);
+            const dst = await metricsOf(TARGET_DB);
+            let drift = 0;
 
-          const keys = [...TABLES, 'records_max_updated_at', 'audit_max_id'];
-          const report = ['| Metric | fq-apply | fantasme-apply-prod | Match |', '|---|---:|---:|:---:|'];
+            const keys = [...TABLES, 'records_max_updated_at', 'audit_max_id'];
+            const report = ['| Metric | fq-apply | fantasme-apply-prod | Match |', '|---|---:|---:|:---:|'];
 
-          for (const k of keys) {
-            const a = src.get(k) ?? '(missing)';
-            const b = dst.get(k) ?? '(missing)';
-            const ok = a === b;
-            if (!ok) drift++;
-            report.push(`| ${k} | ${a} | ${b} | ${ok ? 'OK' : 'DIFF'} |`);
+            for (const k of keys) {
+              const a = src.get(k) ?? '(missing)';
+              const b = dst.get(k) ?? '(missing)';
+              const ok = a === b;
+              if (!ok) drift++;
+              report.push(`| ${k} | ${a} | ${b} | ${ok ? 'OK' : 'DIFF'} |`);
+            }
+
+            const text = report.join('\n');
+            console.log(text);
+            if (process.env.GITHUB_STEP_SUMMARY) {
+              fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `### D1 Drift Check\n\n${text}\n`);
+            }
+            if (drift > 0) {
+              throw new Error(`Drift check detected ${drift} mismatch(es) between ${SOURCE_DB} and ${TARGET_DB}.`);
+            }
           }
 
-          const text = report.join('\n');
-          console.log(text);
-          if (process.env.GITHUB_STEP_SUMMARY) {
-            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `### D1 Drift Check\n\n${text}\n`);
-          }
-          if (drift > 0) {
-            throw new Error(`Drift check detected ${drift} mismatch(es) between ${SOURCE_DB} and ${TARGET_DB}.`);
-          }
+          main().catch((err) => {
+            console.error(err.message || err);
+            process.exit(1);
+          });
           EOF
 
       - name: Cleanup runner temporary SQL files
