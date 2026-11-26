@@ -5585,7 +5585,8 @@
       document.getElementById("app").innerHTML = `<div class="login"><div class="notice err">${I("alert")}<div><strong>无法加载数据</strong>${a(t.message)}</div></div></div>`;
     }
   }
-  let da = null;
+  let da = null,
+    daAt = 0;
   function na() {
     return t ? (da ||= ge.call("GET", "/diy-admin/state").then(t => {
       ea.d = {
@@ -5599,7 +5600,7 @@
     }).catch(t => Ae("DIY 数据加载失败：" + t.message, {
       error: !0
     })).finally(() => {
-      da = null;
+      da = null, daAt = Date.now();
     }), da) : Promise.resolve();
   }
   const oa = t => na().then(() => {
@@ -6569,7 +6570,7 @@
       va.logout();
     }
     if (Ua(), !ae() || "supervisor" !== ae().role) return;
-    if (t && !ea.d) return void (da || na().then(() => Vs()));
+    if (t && (!ea.d || Date.now() - daAt > 15e3 && ["diy-students", "diy-student", "diy-settings"].includes(Ps().name))) return void (da || na().then(() => Vs()));
     const e = Ps(),
       s = document.querySelector('.nav-btn[data-href="#/diy-students"]');
     if (s && s.insertAdjacentHTML("beforebegin", '<div class="nav-sec">DIY 免费版</div>'), !["diy-students", "diy-student", "diy-settings"].includes(e.name)) return;
