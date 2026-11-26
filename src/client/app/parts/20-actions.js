@@ -1,3 +1,21 @@
+  // M2：浏览器给 .pages/.md 等的 File.type 常为空，按扩展名给出服务端白名单中的 Content-Type。
+  const fqUploadTypes = {
+    pdf: "application/pdf", doc: "application/msword", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    pages: "application/vnd.apple.pages", txt: "text/plain", md: "text/markdown", rtf: "application/rtf",
+    jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png"
+  };
+  async function fqUploadFile(documentId, file, type) {
+    const r = await fetch("/api/files?documentId=" + encodeURIComponent(documentId), {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": type, "X-File-Name": encodeURIComponent(file.name), "X-FQ": "1" },
+      body: file
+    });
+    let data = {};
+    try { data = await r.json(); } catch (_) {}
+    if (!r.ok || !data.upload) throw new Error(data.error || "HTTP " + r.status);
+    return data.upload;
+  }
   const ms = {
     "task-sort"(t) {
       fqTaskSort.set(t.dataset.k), Vs();
@@ -501,13 +519,13 @@
       if (!rs(e && ce.docUpload(e))) return;
       const s = Gt(e),
         d = bt.versionsOf(e.id)[0],
-        n = t.dataset.mode || (d && !Ue(d) ? "file" : "text"),
+        n = t.dataset.mode || (d && fqIsUpload(d) ? "upload" : d && !Ue(d) ? "file" : "text"),
         o = d && Ue(d) ? d.text : "";
       Oe({
         title: "新版本",
-        sub: e.title + " · 可以直接在系统里写正文（不超过 " + x + " words），也可以登记网盘文件",
+        sub: e.title + " · 可以在系统里写正文（不超过 " + x + " words）、上传文件，或登记网盘链接",
         wide: !0,
-        body: `${s && "revising" === e.status ? `<div class="notice err">${I("message")}<div><strong>需要回应的意见</strong>${a(s.comment)}</div></div>` : ""}\n      <div class="seg"><label><input type="radio" name="mode" value="text" data-act="ver-mode" ${"text" === n ? "checked" : ""}>${I("edit")} 在线输入正文</label><label><input type="radio" name="mode" value="file" data-act="ver-mode" ${"file" === n ? "checked" : ""}>${I("link")} 登记网盘文件</label></div>\n      <div id="verText" ${"text" === n ? "" : "hidden"}>\n        <textarea class="textarea" name="text" id="verTextArea" rows="16" style="font:14px/1.7 Georgia,'Times New Roman','Songti SC',serif" placeholder="在这里撰写或粘贴文书正文">${a(o)}</textarea>\n        <div class="word-count" id="verCount">${w(o)} / ${x} words</div>\n        ${o ? `<div class="tiny muted2">已带入 V${d.no} 的正文，修改后保存为新版本；旧版本保留不变。</div>` : ""}\n      </div>\n      <div id="verFile" class="form-grid" ${"file" === n ? "" : "hidden"}>${Le("link", "网盘链接", "", "url", {
+        body: `${s && "revising" === e.status ? `<div class="notice err">${I("message")}<div><strong>需要回应的意见</strong>${a(s.comment)}</div></div>` : ""}\n      <div class="seg"><label><input type="radio" name="mode" value="text" data-act="ver-mode" ${"text" === n ? "checked" : ""}>${I("edit")} 在线输入正文</label><label><input type="radio" name="mode" value="file" data-act="ver-mode" ${"file" === n ? "checked" : ""}>${I("link")} 登记网盘链接</label><label><input type="radio" name="mode" value="upload" data-act="ver-mode" ${"upload" === n ? "checked" : ""}>${I("upload")} 上传文件</label></div>\n      <div id="verUpload" class="form-grid" ${"upload" === n ? "" : "hidden"}><div class="field full"><input type="file" name="file" class="input" accept="${Object.keys(fqUploadTypes).map(t => "." + t).join(",")}"><div class="tiny muted2">支持 PDF、Word、Pages、TXT、Markdown、RTF、JPG、PNG，单个文件不超过 20 MB</div></div></div>\n      <div id="verText" ${"text" === n ? "" : "hidden"}>\n        <textarea class="textarea" name="text" id="verTextArea" rows="16" style="font:14px/1.7 Georgia,'Times New Roman','Songti SC',serif" placeholder="在这里撰写或粘贴文书正文">${a(o)}</textarea>\n        <div class="word-count" id="verCount">${w(o)} / ${x} words</div>\n        ${o ? `<div class="tiny muted2">已带入 V${d.no} 的正文，修改后保存为新版本；旧版本保留不变。</div>` : ""}\n      </div>\n      <div id="verFile" class="form-grid" ${"file" === n ? "" : "hidden"}>${Le("link", "网盘链接", "", "url", {
           full: !0,
           placeholder: "https://"
         })}${Le("fileName", "文件名", "", "text", {
@@ -521,10 +539,41 @@
           full: !0
         })}</div>`,
         submitLabel: "保存版本",
-        onSubmit: t => {
+        onSubmit: async (t, form) => {
           const s = (bt.versionsOf(e.id)[0]?.no || 0) + 1;
           let a;
-          if ("text" === t.mode) {
+          if ("upload" === t.mode) {
+            const f = form?.querySelector('input[name="file"]')?.files?.[0];
+            if (!f) return Ae("请选择要上传的文件", {
+              error: !0
+            }), !1;
+            const ext = (f.name.split(".").pop() || "").toLowerCase();
+            if (!fqUploadTypes[ext]) return Ae("不支持的文件类型：." + ext, {
+              error: !0
+            }), !1;
+            if (f.size > 20 * 1024 * 1024) return Ae("文件超过 20 MB 上限", {
+              error: !0
+            }), !1;
+            let up;
+            try {
+              up = await fqUploadFile(e.id, f, fqUploadTypes[ext]);
+            } catch (err) {
+              return Ae("上传失败：" + err.message, {
+                error: !0
+              }), !1;
+            }
+            a = {
+              id: i("v"),
+              documentId: e.id,
+              studentId: e.studentId,
+              no: s,
+              kind: "upload",
+              upload: up,
+              fileName: up.name,
+              note: t.note,
+              createdBy: ae().id
+            };
+          } else if ("text" === t.mode) {
             const n = w(t.text);
             if (!t.text) return Ae("请输入正文", {
               error: !0
@@ -2245,7 +2294,7 @@
               advisor: "顾问",
               supervisor: "主管",
               student: "学生"
-            }[n.stage])} ${a($t(n.userId))} 退回了 V${st.get("versions", n.versionId)?.no || ""}（${p(n.createdAt)}）</strong>${a(n.comment)}</div></div>` : ""}\n      ${ce.docUpload(e) && !ce.docSubmit(e) && "revising" === e.status ? '<div class="tiny muted2 mt8">请先上传修改后的新版本，再送审。</div>' : ""}\n    </div></section>\n    <div class="grid cols-main"><section class="panel"><div class="panel-head"><div><h3>版本与审核记录</h3><p>文件存放在网盘；每个版本下保留对应的审核意见</p></div></div><div class="panel-body stack tight">${i.map(t => {
+            }[n.stage])} ${a($t(n.userId))} 退回了 V${st.get("versions", n.versionId)?.no || ""}（${p(n.createdAt)}）</strong>${a(n.comment)}</div></div>` : ""}\n      ${ce.docUpload(e) && !ce.docSubmit(e) && "revising" === e.status ? '<div class="tiny muted2 mt8">请先上传修改后的新版本，再送审。</div>' : ""}\n    </div></section>\n    <div class="grid cols-main"><section class="panel"><div class="panel-head"><div><h3>版本与审核记录</h3><p>文件可上传或登记网盘链接；每个版本下保留对应的审核意见</p></div></div><div class="panel-body stack tight">${i.map(t => {
               const s = d.filter(e => e.versionId === t.id);
               return `<div class="card ${t.id === e.currentVersionId ? "hl" : ""}"><div class="row between"><div><div class="card-title">V${t.no}${t.id === e.currentVersionId ? " · 当前版本" : ""}</div><div class="card-meta">${Ue(t) ? '<span class="tag">在线正文</span> ' : ""}${a(ze(t))} · ${a($t(t.createdBy))} · ${m(t.createdAt)}</div></div><div class="row" style="gap:4px">${He(t)}</div></div>\n      ${t.note ? `<div class="small mt8">本版修改：${a(t.note)}</div>` : ""}\n      ${Ue(t) && t.id === e.currentVersionId ? `<div class="mt8">${Ge(t, 260)}</div>` : ""}\n      ${s.length ? `<div class="timeline mt12">${s.map(r).join("")}</div>` : ""}</div>`;
             }).join("") || Me("还没有版本", ce.docUpload(e) ? "点击“上传新版本”，登记网盘链接。" : "")}</div></section>\n    <section class="panel"><div class="panel-head"><div><h3>立项要求</h3></div><button class="btn sm" data-act="intake-essays" data-sid="${s.id}">${I("book")} 学生文书素材</button></div><div class="panel-body">\n      <div class="fact"><span>类型</span><div>${a(X(F, e.type))}</div></div>\n      <div class="fact"><span>用于</span><div>${a(Ut(e))}</div></div>\n      <div class="fact"><span>字数 / 篇幅</span><div>${a(e.wordLimit || "—")}</div></div>\n      <div class="fact"><span>写作要求</span><div style="white-space:pre-wrap">${a(e.brief || "—")}</div></div>\n      <div class="fact"><span>学生确认</span><div>${e.needStudentConfirm ? "需要（主管定稿后发给学生）" : "不需要"}</div></div>\n      <div class="fact"><span>截止</span><div>${p(e.dueDate)}</div></div>\n      ${(() => { const fqT = st.where("tasks", x => x.documentId === e.id); return fqT.length ? `<div class="fact"><span>关联任务</span><div>${fqT.map(x => `${a(x.title)}（${a(X(q, x.status))}${x.dueDate ? " · " + p(x.dueDate) : ""}）`).join("<br>")}</div></div>` : ""; })()}\n    </div></section></div>`;

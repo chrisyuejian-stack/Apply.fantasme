@@ -350,11 +350,15 @@
     return `<div class="avatar">${a((t || "?").slice(0, 1))}</div>`;
   }
   const Ue = t => "text" === t?.kind;
+  // M2：kind:"upload" 为上传到 R2 的文件（历史 kind:"file" 是外部网盘链接，语义不变）。
+  const fqIsUpload = t => "upload" === t?.kind && !!t.upload?.key;
+  const fqUploadHref = t => "/api/files/" + String(t.upload.key).split("/").map(encodeURIComponent).join("/");
+  const fqFileSize = n => n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round((n || 0) / 1024)) + " KB";
   function ze(t) {
-    return Ue(t) ? `在线正文 · ${t.words || w(t.text)} words` : t.fileName || "网盘文件";
+    return Ue(t) ? `在线正文 · ${t.words || w(t.text)} words` : fqIsUpload(t) ? `${t.upload.name} · ${fqFileSize(t.upload.size)}` : t.fileName || "网盘文件";
   }
   function He(t, e = "btn sm", s = "") {
-    return t ? Ue(t) ? `<button type="button" class="${e}" data-act="ver-view" data-id="${t.id}">${s || "查看正文"}</button>` : `${S(t.link) ? `<a class="${e}" href="${a(S(t.link))}" target="_blank" rel="noopener">${s || "打开"} ${I("external")}</a>` : '<span class="small muted2">链接无效</span>'}` : "";
+    return t ? Ue(t) ? `<button type="button" class="${e}" data-act="ver-view" data-id="${t.id}">${s || "查看正文"}</button>` : fqIsUpload(t) ? `<a class="${e}" href="${a(fqUploadHref(t))}" download>${s || "下载"} ${I("download")}</a>` : `${S(t.link) ? `<a class="${e}" href="${a(S(t.link))}" target="_blank" rel="noopener">${s || "打开"} ${I("external")}</a>` : '<span class="small muted2">链接无效</span>'}` : "";
   }
   function Ge(t, e = 420) {
     return `<div class="doc-text" style="max-height:${e}px">${a(t.text || "")}</div><div class="row between mt8"><span class="tiny muted2">${t.words || w(t.text)} / ${x} words</span><button type="button" class="btn sm" data-act="ver-copy" data-id="${t.id}">复制正文</button></div>`;
@@ -390,7 +394,7 @@
       const i = t.versions?.[t.versions.length - 1],
         d = t.feedback || [],
         n = d[d.length - 1];
-      return `<tr><td><div class="td-main"><button class="linkbtn" data-act="mat-open" data-id="${t.id}">${a(t.title)}</button></div><div class="td-sub">${a(X(H, t.kind))}</div></td>\n      ${e ? `<td>${a(bt.student(t.studentId)?.name)}</td>` : ""}\n      <td class="small">${(t.applicationIds || []).map(t => a(ft(bt.app(t)))).join("、") || '<span class="muted2">通用</span>'}</td>\n      <td>${i ? `${Ue(i) ? `<button type="button" class="linkbtn small" data-act="ver-view" data-id="${i.id}">V${i.no}</button>` : S(i.link) ? `<a href="${a(S(i.link))}" target="_blank" rel="noopener" class="small">V${i.no} ${I("external")}</a>` : `<span class="small muted2">V${i.no} · 链接无效</span>`}<div class="td-sub">${p(i.at)}</div>` : '<span class="muted2">—</span>'}</td>\n      <td>${Q(G, t.status)}</td>\n      <td class="small">${n ? `<span class="${"changes" === n.verdict ? "date-red" : ""}">${a(n.author || n.source)}：${a(n.text.slice(0, 26))}${n.text.length > 26 ? "…" : ""}</span>` : '<span class="muted2">—</span>'}</td>\n      <td class="actions">${s(t) ? `<button class="btn sm" data-act="mat-version" data-id="${t.id}">新版本</button> <button class="btn sm" data-act="mat-feedback" data-id="${t.id}">登记意见</button>` : `<button class="btn sm" data-act="mat-open" data-id="${t.id}">查看</button>`}</td></tr>`;
+      return `<tr><td><div class="td-main"><button class="linkbtn" data-act="mat-open" data-id="${t.id}">${a(t.title)}</button></div><div class="td-sub">${a(X(H, t.kind))}</div></td>\n      ${e ? `<td>${a(bt.student(t.studentId)?.name)}</td>` : ""}\n      <td class="small">${(t.applicationIds || []).map(t => a(ft(bt.app(t)))).join("、") || '<span class="muted2">通用</span>'}</td>\n      <td>${i ? `${Ue(i) ? `<button type="button" class="linkbtn small" data-act="ver-view" data-id="${i.id}">V${i.no}</button>` : fqIsUpload(i) ? `<a href="${a(fqUploadHref(i))}" download class="small">V${i.no} ${I("download")}</a>` : S(i.link) ? `<a href="${a(S(i.link))}" target="_blank" rel="noopener" class="small">V${i.no} ${I("external")}</a>` : `<span class="small muted2">V${i.no} · 链接无效</span>`}<div class="td-sub">${p(i.at)}</div>` : '<span class="muted2">—</span>'}</td>\n      <td>${Q(G, t.status)}</td>\n      <td class="small">${n ? `<span class="${"changes" === n.verdict ? "date-red" : ""}">${a(n.author || n.source)}：${a(n.text.slice(0, 26))}${n.text.length > 26 ? "…" : ""}</span>` : '<span class="muted2">—</span>'}</td>\n      <td class="actions">${s(t) ? `<button class="btn sm" data-act="mat-version" data-id="${t.id}">新版本</button> <button class="btn sm" data-act="mat-feedback" data-id="${t.id}">登记意见</button>` : `<button class="btn sm" data-act="mat-open" data-id="${t.id}">查看</button>`}</td></tr>`;
     }).join("")}</tbody></table></div>` : Me("还没有登记文件");
   }
   function Xe(t, e) {
