@@ -25,14 +25,18 @@
 
 **资源**：R2 桶 `fantasme-apply-files`（生产）、`fantasme-apply-files-preview`；Pages 绑定名 `FILES`。由 Antigravity 扩展 `provision-production` 创建并绑定（production Token 需临时加 R2 Edit）。
 
-**数据（只加字段）**：文书版本 `versions` 现有 `kind: "text" | 链接`。新增 `kind: "file"`，版本 JSON 追加 `file: { key, name, size, type, sha256 }`。旧数据不变，`Ue()`/`He()` 增加 file 分支。
+**数据（只加字段）**：⚠️ 现有数据中 **`kind: "file"` 表示外部网盘链接**（`Qe` 的 versions 分支把所有非 `text` 版本强制设为 `"file"` 并要求 http(s) `link`；前端显示「网盘文件」）。因此上传文件使用**新值 `kind: "upload"`**，版本 JSON 追加 `upload: { key, name, size, type, sha256 }`，不带 `link`/`text`。历史 `"file"` 版本语义不变、不迁移。
+
+**服务端校验（`Qe` versions 分支）**：在 `text` 分支之后、现有「其余一律按 file 链接」分支之前增加 `upload` 分支：`upload.key` 必须以 `docs/<studentId>/<documentId>/` 开头且对象在 R2 中存在（`FILES.head`），`size`/`type` 以服务端 `head` 结果为准覆盖客户端值，删除 `link`/`text`。写权限沿用该分支已有规则（负责文书老师或可管理该学生者，文书处于 drafting/revising，未归档）。
 
 **接口**
-- `POST /api/files?documentId=…`：请求体为文件原始字节，头 `X-File-Name`（URL 编码）。校验：登录、对该文书有写权限（复用 `Qe` 的 versions 规则）、大小 ≤ **20 MB**、类型白名单（pdf、doc/docx、pages、txt、md、rtf、jpg/png）。键为 `docs/<studentId>/<documentId>/<uuid>`；服务端算 sha256；返回 `file` 对象。随后前端照常 `PUT /api/t/versions/:id` 写入带 `file` 的版本。
+- `POST /api/files?documentId=…`：请求体为文件原始字节，头 `X-File-Name`（URL 编码）。校验：登录、对该文书有写权限（与 `Qe` versions 分支相同的规则）、大小 ≤ **20 MB**（先看 `Content-Length`，再按实际字节数）、类型白名单（pdf、doc/docx、pages、txt、md、rtf、jpg/png，按扩展名+`Content-Type` 双重判断）。键为 `docs/<studentId>/<documentId>/<uuid>`；服务端算 sha256；R2 对象写入 `customMetadata { uploadedBy, fileName }`；返回 `upload` 对象。随后前端照常 `PUT /api/t/versions/:id` 写入 `kind:"upload"` 的版本。该路由受同源校验（BUG-03）约束。
 - `GET /api/files/<key>`：按键解析出 `studentId`，用 `de()` 可见性校验；响应 `Content-Disposition: attachment`、`X-Content-Type-Options: nosniff`、`Cache-Control: private`，**不内联展示**（防 XSS）。
 - 孤儿文件：上传后未写入版本的对象，由后续清理任务按「键不被任何版本引用且超过 24 小时」删除（M2 第二个 PR）。
 
-**前端**：新建版本表单加「上传文件」选项（与在线正文、外部链接并列）；版本列表与卡片对 file 显示文件名 + 下载。
+**本地开发与测试**：`scripts/local-r2.mjs` 实现 `put/get/head/delete` 子集（存到 `.local/` 目录），`dev.mjs` 与测试注入为 `FILES`；未绑定 `FILES` 时上传接口返回 503「文件存储未配置」，不影响其他功能。
+
+**前端**：新建版本表单加「上传文件」选项（与在线正文、外部链接并列）；`Ue()`/`He()`/`ze()` 增加 `upload` 分支，显示文件名 + 下载按钮（走 `GET /api/files/<key>`）。
 
 **备份**：R2 不在 `/api/admin/export` 的 JSON 内。在 `deploy.md` 增加「R2 备份」：定期复制到 `fengqin-backups-prod` 同类桶或开启对象版本，方案由 Antigravity 实施。
 
