@@ -7,14 +7,16 @@
 - [x] Preview 部署工作流（PR #2，仅 preview）
 - [x] 全面审计报告与回归/E2E/性能套件已合入 main（PR #4）
 - [x] 协作文档体系已合入 main（PR #3）
-- [ ] 生产对齐核查（Grok-Ops，**阻塞上线与 D1 变更**）
+- [x] 生产拓扑与 D1 结构只读核对（14 表与基线列定义一致，见 deploy.md）
+- [ ] 剥离 apply 到新生产项目 `fantasme-apply`（流程见 deploy.md，Antigravity 先实现三个 production 工作流）
 - [ ] 缺陷修复首轮（GPT，截至本页更新时远端无其分支/PR）
 
 ## 环境状态
 | 环境 | 状态 |
 |---|---|
 | Preview `fantasme-apply-test` | 工作流就绪；最近一次部署：Run `45806316335` 成功（`https://45bdd376.fantasme-apply-test.pages.dev` / 别名 `https://preview.fantasme-apply-test.pages.dev`） |
-| Production `fantasme-academic` | **锁定**。线上与恢复基线未对齐，11 月 1 日部署待核对 |
+| 旧 `fantasme-academic` | **永久不动**（仅主人解绑 apply 域名，库只读导出） |
+| 新生产 `fantasme-apply` | 待建（`provision-production.yml`），迁移中员工暂停使用 |
 
 ## 阻塞项 / 待办
 1. ~~合入审计分支~~ 已完成（PR #4）。

@@ -1,45 +1,59 @@
 # 发布与 D1 守则
 
-红线见 [AGENTS.md](../AGENTS.md)。
+红线见 [AGENTS.md](../AGENTS.md)。本页是发布、迁移、回滚的唯一流程来源。
+
+## 拓扑（2026-11-26 只读核实，只记名称）
+
+| 角色 | Pages 项目 | 域名 | D1（`APPLY_DB`） |
+|---|---|---|---|
+| 旧综合项目（**永久不动**） | `fantasme-academic` | `www.` 官网、`selftest.`、（迁移前）`apply.fantasmearts.com` | `fq-apply`（另有 `EDU_DB`=`fq-edu`、`SITE_DB`=`fantasme-site-db`） |
+| **新生产项目**（待建） | `fantasme-apply` | `apply.fantasmearts.com`（切换后） | `fantasme-apply-prod`（待建） |
+| Preview | `fantasme-apply-test` | `preview.fantasme-apply-test.pages.dev` | `fantasme-apply-test-db` |
+
+- 基线只含申请系统；`fantasme-academic` 是官网+自测+申请三合一，**任何工作流都不得指向它**，也不得写 `fq-apply`（仅允许只读导出）。
+- 账号内其他项目（`fengqin-*`、`jw-channel-*`、`yijiexingtu-*`、`fq-tools`、各 backup Worker）与本系统无关，**一律不碰**。
+- 已核对（只读）：`fq-apply` 14 张表的列定义与基线完全一致；11 月 1 日线上代码行为已由主人核对无问题。
 
 ## Preview（已开放）
-- 项目 `fantasme-apply-test`，站点 `https://preview.fantasme-apply-test.pages.dev`。
-- 触发：`gh workflow run deploy.yml -f environment=preview`，或 OWNER 本人在 PR 评论 `/deploy preview`。
-- 部署内容为 `dist/`（`npm run build` 生成）。**不执行任何 D1 迁移。**
-- 发布者：Antigravity。部署后由 Grok-Ops 做冒烟与只读巡检。
+- 触发：`gh workflow run deploy.yml -f environment=preview`，或 OWNER 本人在 PR 评论 `/deploy preview`（评论触发的收紧由 Antigravity 另提 PR）。
+- 部署 `dist/` 到 `fantasme-apply-test` 的 `--branch=preview`，**不执行 D1 迁移**。发布者 Antigravity，部署后 Grok-Ops 冒烟。
 
-## Production（**锁定**）
-解锁条件，缺一不可：
-1. 生产对齐核查清单全部完成（下表），差异已评估。
-2. 获得 `chrisyuejian-stack` 对"指向生产"的明确二次确认。
-3. 已有线上 D1 备份导出，且恢复演练在 preview 通过。
-4. 上线前门禁：Claude、GPT 与 Grok-Ops 交叉审阅通过。
+## Production 发布闸门（`fantasme-apply`）
 
-在此之前不得创建指向 `fantasme-academic` 的工作流或命令。
+写权限只经由 GitHub Actions 的 `production` Environment：**必须由主人（OWNER）审批**才能运行，其 Secrets 与 preview 分开存放。各 AI 即使持有 Cloudflare/Actions 权限，也不直接对生产手工写，一律走工作流。Grok-Ops 始终只读。
 
-## 生产对齐核查清单（Grok-Ops 填写，只读；只记名称与数量，不含学生数据）
-| 项 | 结果 | 与恢复基线一致？ |
+- Secrets：`production` Environment 的 `CLOUDFLARE_API_TOKEN`（最小范围：Pages Edit、D1 Edit、Account 读；设有效期，迁移完成后收缩为仅 Pages Edit）、`CLOUDFLARE_ACCOUNT_ID`。值由主人在 GitHub 设置，不入库。
+- 工作流（Antigravity 另提 PR 实现，本页为需求）：
+  1. `provision-production.yml`：`workflow_dispatch` + 审批；创建 Pages 项目 `fantasme-apply`、D1 `fantasme-apply-prod`，建立 `APPLY_DB` 绑定；**幂等**，已存在则跳过。
+  2. `migrate-d1.yml`：`workflow_dispatch` + 审批；在 runner 内 `wrangler d1 export fq-apply --remote` → 导入 `fantasme-apply-prod`，**不上传 artifact、不打印数据、不写入仓库**；结束时输出各表行数及 `records` 最大 `updated_at`、`audit` 最大 `id` 用于漂移校验。
+  3. `deploy-production.yml`：`workflow_dispatch` + 审批；构建并 `pages deploy dist --project-name=fantasme-apply --branch=main`，**不执行任何 D1 DDL**。
+- 变量/密钥：`APPLY_SETUP_KEY`、`DEEPSEEK_API_KEY` 由主人在新项目后台直接填写（我们读不到旧值，也不转存）；`SITE_URL=https://www.fantasmearts.com`（保证 `/embed-login` CSP 与 `/__portal` 跳转）。
+
+## 一次性迁移：`apply.fantasmearts.com` 剥离
+
+| 步 | 负责 | 动作 |
 |---|---|---|
-| Pages 当前部署的 commit/产物哈希 | | |
-| Bindings 名称（`APPLY_DB` 等，不含值） | | |
-| 环境变量/Secrets 名称（不含值） | | |
-| D1 表清单与列定义（含 `fq_ai_*`） | | |
-| 各表行数量级 | | |
-| 自 11 月 1 日部署后的代码差异 | | |
+| 0 | 主人 | 通知员工与学生暂停使用；**自行用 `wrangler d1 export fq-apply --remote` 备份到本机**（备份不入库、不发给任何 AI）；腾讯云把 `apply` 记录 TTL 降到最低 |
+| 1 | 主人设 Secrets → Antigravity | 跑 `provision-production.yml` |
+| 2 | 主人 | 在新项目后台填 `APPLY_SETUP_KEY`、`DEEPSEEK_API_KEY`、`SITE_URL` |
+| 3 | Antigravity | 跑 `migrate-d1.yml`（导入），再跑 `deploy-production.yml` |
+| 4 | Grok-Ops + Antigravity | 在 `fantasme-apply.pages.dev` 上核对：行数与源库一致、管理员可登录、学生/DIY 可读、文书版本、Cookie 属性、`/__portal`、`/embed-login`。**全部通过再切域名** |
+| 5 | 主人 | 再次确认停用中；`migrate-d1.yml` **重跑一次做最终同步**，漂移校验为 0 差异 |
+| 6 | 主人 | Cloudflare 后台：`fantasme-academic` 移除 `apply.fantasmearts.com`；`fantasme-apply` 添加该域名 |
+| 7 | 主人 | 腾讯云 DNS：`apply` 的 CNAME 指向 `fantasme-apply.pages.dev`，等待证书生效 |
+| 8 | Grok-Ops + Antigravity | 线上冒烟（同步骤 4）+ 官网嵌入登录；通过后主人恢复使用 |
+| 9 | Claude | 更新 status.md，保留旧库 `fq-apply` 至少 30 天作回滚点，之后由主人决定清理 |
 
-## Secrets / Bindings 清单（只列名，值不入库）
-- GitHub `preview` environment：Cloudflare 部署凭据（名称以 `deploy.yml` 为准）。
-- Pages Bindings：`APPLY_DB`（D1）。AI 相关变量如 `DEEPSEEK_API_KEY` 仅在对应环境配置，本地默认关闭。
-- 具体名称以 Grok-Ops 核查结果为准，补全后更新此处。
+**回滚**：Cloudflare 把域名从 `fantasme-apply` 移回 `fantasme-academic`，腾讯云 CNAME 改回原值。旧库 `fq-apply` 全程未被写入，数据不丢；切换后新库产生的写入需另行评估回灌。
 
-## D1 零停机变更守则
-1. **只做加法**：先加表/列（含默认值），再发布读写新字段的代码，最后才考虑清理；代码必须兼容缺省字段的历史 JSON。
+## D1 变更守则
+1. **只做加法**：先加表/列（含默认值），再发布读写新字段的代码，最后才考虑清理；代码兼容缺省字段的历史 JSON。
 2. 不改 PBKDF2（100,000）哈希格式与会话 Cookie 契约。
-3. DDL 先在 preview 的 D1 演练；不得写入自动工作流。
-4. 生产变更：先导出备份 → 主人逐条确认 → 单步执行 → 立即核对。
-5. 分批写入（`batch()` 语句/参数上限需 Grok 实测）。
+3. DDL 先在 preview 库演练；**不得写入任何自动工作流**（迁移工作流只搬数据，不改结构）。
+4. 生产 D1 的任何变更：先备份 → 主人逐条确认 → 单步执行 → 立即核对。
+5. 批量写入分批（`batch()` 上限由 Grok-Ops 实测后补充）。
 
-## 回滚
-- 代码：Cloudflare Pages 回退到上一个成功部署。
-- 数据：回滚靠备份恢复，不靠回退结构；因此守则 1（只做加法）是前提。
-- 每次发布前记录上一部署 ID 于 status.md。
+## Secrets / Bindings 清单（只列名）
+- `preview` Environment：`CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`。
+- `production` Environment：同名两项（独立 Token）。
+- Pages 变量：`APPLY_SETUP_KEY`、`SITE_URL`、`DEEPSEEK_API_KEY`（仅生产，按需）。Bindings：`APPLY_DB`。

@@ -24,7 +24,10 @@
 
 - **评论前缀**：共用仓库账号发评论必须加 `[Claude]`、`[GPT]`、`[Antigravity]`、`[Grok-Ops]` 前缀；只响应人工评论或明确 `@角色`，不响应其他前缀的评论，不转述 `/deploy` 指令，防止自触发循环。
 - **Preview 触发**：`gh workflow run deploy.yml -f environment=preview`，或 OWNER 本人在 PR 评论 `/deploy preview`。默认部署到 `fantasme-apply-test`，不执行任何 D1 迁移。
-- **生产锁定**：在完成 `fantasme-academic`（`apply.fantasmearts.com`）线上代码、Bindings 与 D1 结构的逐项对齐核查并获得主人明确二次确认前，严禁将任何工作流指向生产项目或对线上 D1 执行写操作。
+- **生产范围与锁定**：
+  - 旧综合项目 `fantasme-academic`（官网/自测/历史申请系统）**永久禁止**作为任何工作流的目标，其 D1（`fq-apply`、`fq-edu`、`fantasme-site-db`）只允许只读导出，不得写入；账号内其他项目一律不碰。
+  - 申请系统迁移到新生产项目 `fantasme-apply`（D1 `fantasme-apply-prod`），主人已于 2026-11-26 授权该迁移。生产写操作**只经** GitHub Actions `production` Environment 的工作流，且每次需 OWNER 审批；各 AI 不手工直接写生产。流程见 [docs/deploy.md](docs/deploy.md)。
+  - 生产域名切换、DNS 变更由主人本人执行；任何涉及 `apply.fantasmearts.com` 的动作须先完成 deploy.md 的校验步骤。
 - **D1 兼容**：不得破坏现有表（`records`、`users`、`sessions`、`login_attempts`、`meta`、`audit`、`diy_accounts`、`diy_sessions`、`diy_records`、`fq_ai_*`）、历史 JSON 缺省字段、PBKDF2（100,000）哈希格式与会话 Cookie 契约。D1 DDL/迁移不得写入任何自动流程。
 - **只读角色**：Grok-Ops 不写仓库、不写 D1、不持有生产写密钥。
 - **分支**：所有改动走独立分支和 PR，不直推 `main`；同一文件同一时间一个写入者（见 status.md 文件认领表）。
