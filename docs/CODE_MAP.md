@@ -6,11 +6,21 @@
 
 `src/server/entry.js` 的 `worker.fetch`：`/api/ai/*` → `fqaiRoute`；`/__portal` → 官网门户；其余 → `$t.fetch`。`APPLY_DB` 在适配层映射为业务后端的 `DB`。业务资源请求经 `applicationAssets` 补 `/apply` 前缀；保留当前静态目录结构。
 
-业务后端源码在 `src/server/parts/`（构建时按文件名数字前缀原样拼接，见 `scripts/build.mjs`）；下表符号可用函数名搜索定位：
+业务后端源码在 `src/server/parts/`（构建时按文件名数字前缀原样拼接，见 `scripts/build.mjs`）：
+
+| 片段 | 内容 |
+| --- | --- |
+| `00-seed-data.js` | `Ye`：首次安装种子（任务模板 + 院校要求库初始版本），**只在 `/api/setup` 使用** |
+| `01-demo-data.js` | `Ze`：演示数据（`/api/setup` 勾选演示、`/api/admin/demo`） |
+| `90-application.js` | 业务代码 |
+
+**院校要求库的数据源是 D1**（`meta` 表 `reqdb:head`、`reqdb:school:<id>`），管理端「院校要求库」导出（`GET /api/reqdb`）/导入（`PUT /api/reqdb`，整体替换）维护；`Ye.reqdb` 不是线上数据源，会逐渐落后于 D1 中的版本。
+
+下表符号可用函数名搜索定位：
 
 | 符号 | 职责 |
 | --- | --- |
-| `Ye` | 内置任务模板、院校要求等初始数据 |
+| `Ye` | 首次安装种子数据（见上表） |
 | `$t.fetch` | 业务请求入口、数据库初始化与异常响应 |
 | `Hn` | 自动建表与基础初始化 |
 | `Wn` | 页面和静态资源响应 |
