@@ -16,6 +16,15 @@ jobs:
     environment: production
     timeout-minutes: 15
     steps:
+      - name: Guard against post-cutover re-run
+        env:
+          PRODUCTION_CUTOVER_DONE: ${{ vars.PRODUCTION_CUTOVER_DONE }}
+        run: |
+          if [ "${PRODUCTION_CUTOVER_DONE:-}" = "true" ]; then
+            echo "::error::PRODUCTION_CUTOVER_DONE=true: migrate-d1 is permanently locked after production cutover."
+            exit 1
+          fi
+
       - name: Guard target names and secrets
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
