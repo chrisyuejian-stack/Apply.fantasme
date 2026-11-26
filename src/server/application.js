@@ -8592,6 +8592,7 @@ async function Vt(t, e, i, n, o) {
       }
     });
   }
+  if (y.mustChange) throw new s(403, '请先修改初始密码', {mustChange:true});
   if (f === "/profile" && n === "POST") {
     let l = await a(t),
       v = (u?.taxonomy?.majors || []).map(S => S.id),
