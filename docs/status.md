@@ -1,6 +1,6 @@
 # 当前状态（单页速览，谁改了状态谁更新）
 
-更新：2026-11-26
+更新：2026-11-26（分工按 Claude 额度保护调整）
 
 ## 里程碑
 - [x] v2.2.1 恢复基线合入 main（PR #1）
@@ -27,18 +27,18 @@
 | 编号 | 严重度 | 摘要 | 负责 | 状态 |
 |---|---|---|---|---|
 | BUG-01 | High | 删学生不级联 | GPT | 待修 |
-| BUG-02 | High | admin/import 先清空再校验 | GPT（高风险链） | 待修 |
-| BUG-03 | High | `/api/*` 缺 Origin 校验 | GPT（高风险链） | 待修 |
+| BUG-02 | High | admin/import 先清空再校验 | Claude 设计稿 → GPT 实现 → Grok 红队审 | 待修 |
+| BUG-03 | High | `/api/*` 缺 Origin 校验 | Claude 设计稿 → GPT 实现 → Grok 红队审 | 待修 |
 | BUG-04 | Med | 学生覆盖推荐人 | GPT | 待修 |
-| BUG-05 | Med | DIY mustChange 未拦截 | GPT（高风险链） | 待修 |
+| BUG-05 | Med | DIY mustChange 未拦截 | Claude 设计稿 → GPT 实现 → Grok 红队审 | 待修 |
 | BUG-06 | Med | 绕过乐观锁/空版本 | GPT | 待修 |
 | BUG-07 | Med | `Wt`/`fqaiMemo` 跨库缓存 | GPT | 待修 |
 | BUG-08 | Low | 先扣额度后验权 | GPT | 待修 |
 | BUG-09 | Low | final 文书退回规则 | GPT | 待修 |
-| BUG-10 | Med/UI | 窄屏溢出 | Claude | 待修 |
+| BUG-10 | Med/UI | 窄屏溢出 | Claude（额度紧时 BUG-10 可转 GPT） | 待修 |
 | BUG-11 | Med/UI | `S()` 返回 `"#"` | Claude | 待修 |
 | BUG-12 | Med/UI | `na()` 永久缓存 | Claude | 待修 |
-| 性能 | P1 | bootstrap 全表扫描、fqaiAuditAll 平方级 | 设计 Claude → 实现 GPT | 待设计 |
+| 性能 | P1 | bootstrap 全表扫描、fqaiAuditAll 平方级 | Claude 设计稿 → GPT 实现 → Antigravity 性能验收 | 待设计 |
 
 ## 文件认领表（同一文件同一时间一个写入者）
 | 文件 | 写入者 | 分支 | 备注 |
