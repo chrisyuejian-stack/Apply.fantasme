@@ -53,9 +53,25 @@
 2. 不改 PBKDF2（100,000）哈希格式与会话 Cookie 契约。
 3. DDL 先在 preview 库演练；**不得写入任何自动工作流**（迁移工作流只搬数据，不改结构）。
 4. 生产 D1 的任何变更：先备份 → 主人逐条确认 → 单步执行 → 立即核对。
-5. 批量写入分批（`batch()` 上限由 Grok-Ops 实测后补充）。
+5. 批量写入遵守下方「平台限制」；`batch()` 整批只计 1 次查询，但批内每条语句仍受单句限制。
 
-## Secrets / Bindings 清单（只列名）
-- `preview` Environment：`CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`。
-- `production` Environment：同名两项（独立 Token）。
-- Pages 变量：`APPLY_SETUP_KEY`、`SITE_URL`、`DEEPSEEK_API_KEY`（仅生产，按需）。Bindings：`APPLY_DB`。
+## 平台限制（Grok-Ops 查官方文档，2026-11-26）
+来源：developers.cloudflare.com 的 D1 limits 与 Workers limits 页面；数字以官方页面为准，变更时更新此处。
+
+| 项 | 限制 |
+|---|---|
+| D1 单语句绑定参数 | 100（可用 `json_each(?)` 传 JSON 数组规避） |
+| D1 单语句长度 | 100 KB（所以大值必须用绑定参数，不能内联进 SQL 文本） |
+| D1 单行/字符串/BLOB | 2 MB |
+| D1 查询时长 | 30 秒 |
+| `db.batch()` | 无单独的批内条数上限；整批计 1 次「每次 Worker 调用的查询数」（付费 1000、免费 50） |
+| Workers/Pages Functions 内存 | 每 isolate 128 MB |
+| CPU 时间 | 免费 10 ms/请求；付费默认 30 秒，可配到 5 分钟 |
+
+**待实测**：500 学生合成数据下 bootstrap 的内存/CPU。需要一个专用的空 preview D1，或主人明确授权在指定库上写合成数据（生产库一律不写）。
+
+## Secrets / Bindings 清单（只列名，不含值；Grok-Ops 现场只读核对）
+- GitHub Environment：`preview` 与 `production` 各有 `CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`（两个环境使用独立 Token）。
+- `fantasme-apply`（生产）：Binding `APPLY_DB` → D1 `fantasme-apply-prod`；变量 `APPLY_SETUP_KEY`、`DEEPSEEK_API_KEY`、`SITE_URL`；自定义域名 `apply.fantasmearts.com`；preview 配置为空；无 KV/R2/DO/service 绑定。
+- `fantasme-apply-test`（Preview）：Binding `APPLY_DB` → D1 `fantasme-apply-test-db`；变量 `APPLY_SETUP_KEY`、`SITE_URL`（无 `DEEPSEEK_API_KEY`）；无自定义域名。
+- `fantasme-academic`（旧，永久不动）：Bindings `APPLY_DB`→`fq-apply`、`EDU_DB`→`fq-edu`、`SITE_DB`→`fantasme-site-db`；变量 `ADMIN_PASSWORD`、`DEEPSEEK_API_KEY`；域名 `www`、`selftest`。
