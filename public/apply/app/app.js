@@ -2430,7 +2430,7 @@
   const Ue = t => "text" === t?.kind;
   // M2：kind:"upload" 为上传到 R2 的文件（历史 kind:"file" 是外部网盘链接，语义不变）。
   const fqIsUpload = t => "upload" === t?.kind && !!t.upload?.key;
-  const fqUploadHref = t => "/api/files/" + encodeURIComponent(t.upload.key);
+  const fqUploadHref = t => "/api/files/" + String(t.upload.key).split("/").map(encodeURIComponent).join("/");
   const fqFileSize = n => n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round((n || 0) / 1024)) + " KB";
   function ze(t) {
     return Ue(t) ? `在线正文 · ${t.words || w(t.text)} words` : fqIsUpload(t) ? `${t.upload.name} · ${fqFileSize(t.upload.size)}` : t.fileName || "网盘文件";
