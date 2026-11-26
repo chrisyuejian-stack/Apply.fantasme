@@ -1,0 +1,235 @@
+name: Migrate D1 Data (fq-apply -> fantasme-apply-prod)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-ops
+  cancel-in-progress: false
+
+jobs:
+  migrate-d1:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 15
+    steps:
+      - name: Guard target names and secrets
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          SOURCE_DB="fq-apply"
+          TARGET_DB="fantasme-apply-prod"
+
+          if [ "$TARGET_DB" = "fq-apply" ] || [ "$TARGET_DB" = "fantasme-academic" ] || [ "$SOURCE_DB" != "fq-apply" ]; then
+            echo "::error::Invalid D1 migration source/target configuration."
+            exit 1
+          fi
+          if [ -z "$CF_TOKEN" ] || [ -z "$CF_ACCOUNT" ]; then
+            echo "::error::Missing CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID in the 'production' GitHub Environment secrets."
+            exit 1
+          fi
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install Wrangler CLI in runner temp
+        run: |
+          set -euo pipefail
+          mkdir -p "${{ runner.temp }}/wrangler-cli"
+          npm install --prefix "${{ runner.temp }}/wrangler-cli" --no-save wrangler@3.90.0 --silent
+          echo "${{ runner.temp }}/wrangler-cli/node_modules/.bin" >> "$GITHUB_PATH"
+
+      - name: Export fq-apply and import into fantasme-apply-prod (runner-local only, no data logged)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WORK_DIR: ${{ runner.temp }}/d1-migrate
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p "$WORK_DIR"
+
+          node <<'EOF'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const { execFileSync } = require('node:child_process');
+
+          const SOURCE_DB = 'fq-apply';
+          const TARGET_DB = 'fantasme-apply-prod';
+          const WORK_DIR = process.env.WORK_DIR;
+          const TABLES = [
+            'records', 'users', 'sessions', 'login_attempts', 'meta', 'audit',
+            'diy_accounts', 'diy_sessions', 'diy_records',
+            'fq_ai_log', 'fq_ai_usage', 'fq_ai_page_cache', 'fq_ai_feedback', 'fq_ai_reqdb_snap'
+          ];
+
+          function runWrangler(args, captureJson = false) {
+            const out = execFileSync('wrangler', args, {
+              encoding: 'utf8',
+              stdio: ['ignore', 'pipe', 'pipe'],
+              maxBuffer: 64 * 1024 * 1024,
+            });
+            return captureJson ? JSON.parse(out) : out;
+          }
+
+          function queryRows(dbName, sql) {
+            const parsed = runWrangler(
+              ['d1', 'execute', dbName, '--remote', '--yes', '--json', '--command', sql],
+              true
+            );
+            const first = Array.isArray(parsed) ? parsed[0] : parsed;
+            return first?.results || [];
+          }
+
+          // Check how many of the 14 baseline tables already exist in fantasme-apply-prod
+          const existingList = queryRows(
+            TARGET_DB,
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '_cf_%' AND name != 'sqlite_sequence';"
+          ).map((r) => r.name);
+          const existingSet = new Set(existingList);
+          const targetHasSchema = TABLES.every((t) => existingSet.has(t));
+
+          const rawSqlPath = path.join(WORK_DIR, 'export.sql');
+          const importSqlPath = path.join(WORK_DIR, 'import.sql');
+
+          if (targetHasSchema) {
+            console.log(`Target '${TARGET_DB}' already has all 14 tables; exporting data-only (--no-schema, zero DDL).`);
+            runWrangler(['d1', 'export', SOURCE_DB, '--remote', '--no-schema', '--output', rawSqlPath]);
+          } else {
+            console.log(`Target '${TARGET_DB}' missing schema (${existingSet.size} user tables present); exporting source schema + data.`);
+            runWrangler(['d1', 'export', SOURCE_DB, '--remote', '--output', rawSqlPath]);
+          }
+
+          const raw = fs.readFileSync(rawSqlPath, 'utf8');
+          const lines = raw.split(/\r?\n/);
+          const outLines = [];
+
+          if (existingList.length > 0) {
+            // Clear any pre-existing baseline rows in target only for exact idempotent mirror sync (DML only)
+            for (const tbl of existingList) {
+              if (TABLES.includes(tbl)) outLines.push(`DELETE FROM "${tbl}";`);
+            }
+            if (existingSet.has('sqlite_sequence')) {
+              outLines.push('DELETE FROM "sqlite_sequence";');
+            }
+          }
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            if (/^(BEGIN TRANSACTION|COMMIT)\s*;?$/i.test(trimmed)) continue;
+            if (/\b_cf_KV\b/i.test(trimmed)) continue;
+            if (/^CREATE\s+TABLE\s+["'`]?sqlite_sequence["'`]?\b/i.test(trimmed)) continue;
+
+            // If target had missing/partial schema, make source CREATE TABLE/INDEX idempotent
+            if (!targetHasSchema) {
+              if (/^CREATE\s+TABLE\s+(?!IF\s+NOT\s+EXISTS\b)/i.test(trimmed)) {
+                outLines.push(trimmed.replace(/^CREATE\s+TABLE\s+/i, 'CREATE TABLE IF NOT EXISTS '));
+                continue;
+              }
+              if (/^CREATE\s+INDEX\s+(?!IF\s+NOT\s+EXISTS\b)/i.test(trimmed)) {
+                outLines.push(trimmed.replace(/^CREATE\s+INDEX\s+/i, 'CREATE INDEX IF NOT EXISTS '));
+                continue;
+              }
+              if (/^INSERT\s+INTO\s+["'`]?sqlite_sequence["'`]?\b/i.test(trimmed)) {
+                const m = trimmed.match(/VALUES\s*\(\s*'([^']+)'\s*,/i);
+                if (m) outLines.push(`DELETE FROM sqlite_sequence WHERE name='${m[1].replace(/'/g, "''")}';`);
+              }
+            }
+            outLines.push(line);
+          }
+
+          fs.writeFileSync(importSqlPath, outLines.join('\n') + '\n', { mode: 0o600 });
+          fs.unlinkSync(rawSqlPath);
+
+          try {
+            execFileSync(
+              'wrangler',
+              ['d1', 'execute', TARGET_DB, '--remote', '--yes', '--file', importSqlPath],
+              { stdio: ['ignore', 'ignore', 'pipe'] }
+            );
+          } catch (err) {
+            const safeErr = String(err.stderr || err.message || '')
+              .split(/\r?\n/)
+              .filter((l) => !/\b(INSERT|VALUES)\b/i.test(l))
+              .slice(-15)
+              .join('\n');
+            throw new Error(`D1 import failed (exit=${err.status ?? 'unknown'}):\n${safeErr}`);
+          }
+          console.log(`D1 data import into '${TARGET_DB}' finished successfully (data contents suppressed).`);
+          EOF
+
+      - name: Drift check (row counts + records max(updated_at) + audit max(id))
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          node <<'EOF'
+          const fs = require('node:fs');
+          const { execFileSync } = require('node:child_process');
+
+          const SOURCE_DB = 'fq-apply';
+          const TARGET_DB = 'fantasme-apply-prod';
+          const TABLES = [
+            'records', 'users', 'sessions', 'login_attempts', 'meta', 'audit',
+            'diy_accounts', 'diy_sessions', 'diy_records',
+            'fq_ai_log', 'fq_ai_usage', 'fq_ai_page_cache', 'fq_ai_feedback', 'fq_ai_reqdb_snap'
+          ];
+
+          function metricsOf(dbName) {
+            const parts = TABLES.map((t) => `SELECT '${t}' AS k, CAST(COUNT(*) AS TEXT) AS v FROM "${t}"`);
+            parts.push(`SELECT 'records_max_updated_at' AS k, COALESCE(MAX(updated_at), '') AS v FROM "records"`);
+            parts.push(`SELECT 'audit_max_id' AS k, CAST(COALESCE(MAX(id), 0) AS TEXT) AS v FROM "audit"`);
+            const sql = parts.join(' UNION ALL ') + ';';
+
+            const out = execFileSync(
+              'wrangler',
+              ['d1', 'execute', dbName, '--remote', '--yes', '--json', '--command', sql],
+              { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
+            );
+            const parsed = JSON.parse(out);
+            const first = Array.isArray(parsed) ? parsed[0] : parsed;
+            const map = new Map();
+            for (const row of first?.results || []) {
+              map.set(row.k, String(row.v ?? ''));
+            }
+            return map;
+          }
+
+          const src = metricsOf(SOURCE_DB);
+          const dst = metricsOf(TARGET_DB);
+          let drift = 0;
+
+          const keys = [...TABLES, 'records_max_updated_at', 'audit_max_id'];
+          const report = ['| Metric | fq-apply | fantasme-apply-prod | Match |', '|---|---:|---:|:---:|'];
+
+          for (const k of keys) {
+            const a = src.get(k) ?? '(missing)';
+            const b = dst.get(k) ?? '(missing)';
+            const ok = a === b;
+            if (!ok) drift++;
+            report.push(`| ${k} | ${a} | ${b} | ${ok ? 'OK' : 'DIFF'} |`);
+          }
+
+          const text = report.join('\n');
+          console.log(text);
+          if (process.env.GITHUB_STEP_SUMMARY) {
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `### D1 Drift Check\n\n${text}\n`);
+          }
+          if (drift > 0) {
+            throw new Error(`Drift check detected ${drift} mismatch(es) between ${SOURCE_DB} and ${TARGET_DB}.`);
+          }
+          EOF
+
+      - name: Cleanup runner temporary SQL files
+        if: always()
+        run: |
+          rm -rf "${{ runner.temp }}/d1-migrate"
