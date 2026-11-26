@@ -1,6 +1,10 @@
 # 枫琴申请工作站：共享协作约定
 
-适用于 Codex、Claude、Antigravity 及人工开发者。先读 README.md、docs/recovery/REPORT.md、docs/CODE_MAP.md 和 docs/ROADMAP.md。
+适用于 Codex(GPT)、Claude、Antigravity、Grok-Ops 及人工开发者。本文件是**技术红线的唯一来源**，也是总入口。
+
+**开工只读你角色对应的短文件，不要通读全仓**（省 Token）：
+- 所有角色：本文件 + [docs/collab.md](docs/collab.md) + [docs/status.md](docs/status.md)
+- 按需追加：发布/D1 → [docs/deploy.md](docs/deploy.md)；验收 → [docs/acceptance.md](docs/acceptance.md)；定位代码 → [docs/CODE_MAP.md](docs/CODE_MAP.md)；路线 → [docs/ROADMAP.md](docs/ROADMAP.md)；恢复证据 → docs/recovery/REPORT.md
 
 - 当前工程是部署产物恢复基线，未找回原始模块、类型、源码映射和线上数据库。不要声称完全恢复原工程或已验证线上一致。
 - 每个云任务已有隔离环境，使用现有 checkout；除非用户明确要求，不创建 Git worktree。
@@ -14,10 +18,13 @@
 - 功能变更运行 npm test，按影响补充必要测试；检查构建。原始字节不变阶段运行 npm run verify:baseline；有意变更原始文件后在恢复记录/变更说明中解释差异，不更新历史哈希来让它通过。
 - 完成时说明改了什么、实际跑了哪些验证、哪些未验证。部署、推送、线上迁移遵循用户明确授权，不默认执行。
 
-## 多工具与发布协作约定
+## 多工具与发布协作红线
 
-- **角色分工**：GPT/Codex 负责业务开发与缺陷修复（走独立分支和 PR）；Antigravity 负责回归/E2E/性能测试、PR 审查与 `gh` 协调；Grok-Ops 担任只读巡检与发布观察员，不直接修改业务代码、不持有生产写密钥。
-- **GitHub 评论前缀**：共用仓库账号发评论时必须加角色前缀（如 `[Antigravity]`、`[Grok-Ops]`），避免身份混淆或自触发循环。
-- **Preview 触发**：通过 `gh workflow run deploy.yml -f environment=preview` 或 OWNER 在 PR 评论 `/deploy preview`（默认部署到 `fantasme-apply-test`，不执行任何 D1 迁移）。
-- **生产锁定红线**：在完成 `fantasme-academic` 线上代码、Bindings 与 D1 结构的逐项对齐核查并获得用户明确二次确认前，严禁将任何工作流指向生产项目或对线上 D1 执行写操作。
+分工矩阵、评论前缀、交接模板见 [docs/collab.md](docs/collab.md)；发布与 D1 守则见 [docs/deploy.md](docs/deploy.md)。以下红线在任何文档冲突时优先：
 
+- **评论前缀**：共用仓库账号发评论必须加 `[Claude]`、`[GPT]`、`[Antigravity]`、`[Grok-Ops]` 前缀；只响应人工评论或明确 `@角色`，不响应其他前缀的评论，不转述 `/deploy` 指令，防止自触发循环。
+- **Preview 触发**：`gh workflow run deploy.yml -f environment=preview`，或 OWNER 本人在 PR 评论 `/deploy preview`。默认部署到 `fantasme-apply-test`，不执行任何 D1 迁移。
+- **生产锁定**：在完成 `fantasme-academic`（`apply.fantasmearts.com`）线上代码、Bindings 与 D1 结构的逐项对齐核查并获得主人明确二次确认前，严禁将任何工作流指向生产项目或对线上 D1 执行写操作。
+- **D1 兼容**：不得破坏现有表（`records`、`users`、`sessions`、`login_attempts`、`meta`、`audit`、`diy_accounts`、`diy_sessions`、`diy_records`、`fq_ai_*`）、历史 JSON 缺省字段、PBKDF2（100,000）哈希格式与会话 Cookie 契约。D1 DDL/迁移不得写入任何自动流程。
+- **只读角色**：Grok-Ops 不写仓库、不写 D1、不持有生产写密钥。
+- **分支**：所有改动走独立分支和 PR，不直推 `main`；同一文件同一时间一个写入者（见 status.md 文件认领表）。
