@@ -59,7 +59,7 @@
 ## 性能：`Jn`(bootstrap) 与 `fqaiAuditAll`
 
 **阶段 A（无契约变化，GPT 实现）**
-1. `fqaiAuditAll`：先按 `studentId` 建 `Map<studentId, rows[]>` 再逐生关联，消除 O(S·R) 过滤；输出必须与旧实现逐字段一致。
+1. `fqaiAuditAll`：先按 `studentId` 建 `Map<studentId, rows[]>` 再按学生取行，消除 O(S·R) 过滤；输出必须与旧实现逐字段一致。
 2. `Jn`：非 `supervisor` 角色把可见性下推到 SQL：`SELECT tbl,data FROM records WHERE student_id IN (SELECT value FROM json_each(?)) [OR tbl='templates' 仅限员工角色]`。**使用单个 JSON 数组参数，避免 D1 单语句 100 个绑定参数的上限。** `de` 的可见集合计算逻辑不变；`Be` 的脱敏逻辑不变。
    - 依据：生产数据 `student_id` 与 JSON `studentId` 逐行一致；若实现者发现任何分歧，回退为现状。
 3. **差分测试（硬门槛）**：对每个角色在 Small/Medium/Large 夹具上，新旧 `bootstrap` 响应**深度相等**；再跑 `perf-bench`，记录响应体与耗时。
