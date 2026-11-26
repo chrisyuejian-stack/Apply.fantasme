@@ -1986,6 +1986,7 @@ async function fqaiRunAction(deps, run, user, scope, body, emit) {
   const t0 = Date.now();
   let result;
   try {
+    if (A.student && !scope.manage.has(String(body.studentId || ''))) throw new FqaiError(403, '你没有这位学生的管理权限');
     if (A.model) { if (!deps.cfg.apiKey) throw new FqaiError(503, 'AI 助手尚未配置：请在 Cloudflare 项目设置中添加 DEEPSEEK_API_KEY'); await fqaiTake(deps.db, user, 'chat', deps.cfg.dailyChat); await fqaiTakePro(deps.db, user, run); }
     if (action === 'brief') {
       emit({ type: 'status', text: '正在汇总你名下的事项…' });
@@ -1998,7 +1999,6 @@ async function fqaiRunAction(deps, run, user, scope, body, emit) {
       result = await fqaiActDbscan(deps, run, user, scope);
     } else {
       const sid = String(body.studentId || '');
-      if (!scope.manage.has(sid)) throw new FqaiError(403, '你没有这位学生的管理权限');
       emit({ type: 'status', text: '正在读取学生的申请、任务和文书…' });
       const B = await fqaiLoadBundle(deps, sid);
       const cats = { audit: ['process', 'audition', 'english', 'portfolio', 'academic'], tasks: ['process', 'audition', 'english', 'portfolio', 'academic'], precheck: ['process', 'audition', 'english', 'portfolio', 'academic'], repertoire: ['audition', 'portfolio'], paste: ['process', 'audition'] }[action];
