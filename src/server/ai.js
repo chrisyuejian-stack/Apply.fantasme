@@ -2112,7 +2112,7 @@ function fqaiD1Data(db) {
   return {
     async students() { return (await db.prepare("SELECT tbl, student_id, data FROM records WHERE tbl = 'students'").all()).results.map(r => JSON.parse(r.data)); },
     async writerStudents(uid) { return (await db.prepare("SELECT DISTINCT student_id FROM records WHERE tbl = 'documents' AND json_extract(data, '$.writerId') = ?").bind(uid).all()).results.map(r => r.student_id); },
-    async studentRows(sid) { return rowsOf((await db.prepare("SELECT tbl, student_id, data FROM records WHERE student_id = ? OR (tbl = 'students' AND id = ?)").bind(sid, sid).all()).results); },
+    async studentRows(sid) { return rowsOf((await db.prepare("SELECT tbl, student_id, data FROM records WHERE (student_id = ? OR (tbl = 'students' AND id = ?)) AND tbl NOT GLOB '__imp:*'").bind(sid, sid).all()).results); },
     async rows(tbls) {
       const list = rowsOf((await db.prepare(`SELECT tbl, student_id, data FROM records WHERE tbl IN (${tbls.map(() => '?').join(',')})`).bind(...tbls).all()).results);
       for (const r of list) if (r.tbl === 'students') r.studentId = r.id;
