@@ -104,12 +104,13 @@ async function fqaiLog(db, entry) {
 }
 
 /* ---------- 院校库读取（随导入自动更新） ---------- */
-let fqaiMemo = null;
+const fqaiMemo = new WeakMap();
 async function fqaiLoad(db) {
   // 指纹：导入院校库时原代码会删除并重写所有 reqdb:* 行，rowid 与长度随之变化，从而触发重新读取。
   const rows = (await db.prepare("SELECT key, rowid AS r, length(value) AS l FROM meta WHERE key = 'reqdb:head' OR key LIKE 'reqdb:school:%' ORDER BY key").all()).results;
   const fp = rows.map(x => x.key + ':' + x.r + ':' + x.l).join('|');
-  if (fqaiMemo && fqaiMemo.fp === fp) return fqaiMemo;
+  const cached = fqaiMemo.get(db);
+  if (cached && cached.fp === fp) return cached;
   if (!rows.some(x => x.key === 'reqdb:head')) throw new FqaiError(503, '服务器上还没有院校库数据，请主管先导入院校库');
   const all = (await db.prepare("SELECT key, value FROM meta WHERE key = 'reqdb:head' OR key LIKE 'reqdb:school:%'").all()).results;
   let head = null; const records = [];
@@ -119,8 +120,9 @@ async function fqaiLoad(db) {
       if (r.key === 'reqdb:head') head = v; else if (Array.isArray(v)) records.push(...v);
     } catch (_) {}
   }
-  fqaiMemo = fqaiIndex(head, records, fp);
-  return fqaiMemo;
+  const index = fqaiIndex(head, records, fp);
+  fqaiMemo.set(db, index);
+  return index;
 }
 function fqaiStageText(st) { return [st.t, st.ten, st.zh, st.en].filter(Boolean).join(' '); }
 function fqaiIndex(head, records, fp) {
@@ -2027,7 +2029,8 @@ async function fqaiDispatch(path, method, body, deps) {
     let data = null;
     // 打开页面就会调用：不加载 3 MB 院校库，只读一行概况（已加载过时直接用内存里的）
     try {
-      if (fqaiMemo) data = { exportedAt: fqaiMemo.head.exportedAt || '', schools: fqaiMemo.schools.length, records: fqaiMemo.records.length };
+      const cached = fqaiMemo.get(db);
+      if (cached) data = { exportedAt: cached.head.exportedAt || '', schools: cached.schools.length, records: cached.records.length };
       else { const r = await db.prepare("SELECT value FROM meta WHERE key = 'reqdb:head'").first(); const h = r ? JSON.parse(r.value) : null; if (h) data = { exportedAt: h.exportedAt || '', schools: (h.schools || []).length, records: (h.schools || []).reduce((a, x) => a + (x.recordCount || 0), 0) }; }
     } catch (_) {}
     const U = Object.fromEntries(((await db.prepare('SELECT kind, n FROM fq_ai_usage WHERE day = ? AND user_id = ?').bind(fqaiDay(), user.id).all()).results || []).map(x => [x.kind, x.n]));

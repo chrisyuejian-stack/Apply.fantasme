@@ -8790,11 +8790,11 @@ async function Fn(t, e, i, n, o, r) {
   throw new a(404, "\u63A5\u53E3\u4E0D\u5B58\u5728");
 }
 var qn = ["CREATE TABLE IF NOT EXISTS records (tbl TEXT NOT NULL, id TEXT NOT NULL, student_id TEXT, data TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (tbl, id))", "CREATE INDEX IF NOT EXISTS records_student ON records (tbl, student_id)", "CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE COLLATE NOCASE, name TEXT NOT NULL, role TEXT NOT NULL, student_id TEXT, active INTEGER NOT NULL DEFAULT 1, pw_hash TEXT, pw_salt TEXT, must_change INTEGER NOT NULL DEFAULT 1, created_at TEXT, updated_at TEXT, last_login TEXT)", "CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at INTEGER NOT NULL, created_at INTEGER, ip TEXT, ua TEXT)", "CREATE TABLE IF NOT EXISTS login_attempts (key TEXT PRIMARY KEY, count INTEGER, locked_until INTEGER, updated_at INTEGER)", "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)", "CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT, user_id TEXT, action TEXT, tbl TEXT, rec_id TEXT, detail TEXT)"],
-  Wt = !1;
+  Wt = new WeakSet();
 async function Hn(t) {
-  if (!Wt) {
+  if (!t.DB || !Wt.has(t.DB)) {
     if (!t.DB) throw new I(500, "\u7533\u8BF7\u7CFB\u7EDF\u672A\u7ED1\u5B9A D1 \u6570\u636E\u5E93\uFF08wrangler.toml \u4E2D\u7684 APPLY_DB\uFF09");
-    await t.DB.batch([...qn, ...Ht].map(e => t.DB.prepare(e))), Wt = !0;
+    await t.DB.batch([...qn, ...Ht].map(e => t.DB.prepare(e))), Wt.add(t.DB);
   }
 }
 var I = class extends Error {
