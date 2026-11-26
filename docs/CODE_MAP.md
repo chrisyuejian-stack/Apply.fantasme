@@ -6,7 +6,7 @@
 
 `src/server/entry.js` 的 `worker.fetch`：`/api/ai/*` → `fqaiRoute`；`/__portal` → 官网门户；其余 → `$t.fetch`。`APPLY_DB` 在适配层映射为业务后端的 `DB`。业务资源请求经 `applicationAssets` 补 `/apply` 前缀；保留当前静态目录结构。
 
-`application.js` 中可用函数名搜索定位：
+业务后端源码在 `src/server/parts/`（构建时按文件名数字前缀原样拼接，见 `scripts/build.mjs`）；下表符号可用函数名搜索定位：
 
 | 符号 | 职责 |
 | --- | --- |
