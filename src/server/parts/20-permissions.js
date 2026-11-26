@@ -84,7 +84,7 @@ var zt = ["title", "type", "submissionId", "applicationIds", "writerId", "dueDat
   xt = (t, e) => JSON.stringify(t ?? null) === JSON.stringify(e ?? null),
   ye = (t, e, i) => i.filter(n => !xt(t?.[n], e?.[n])),
   Ue = (t, e) => [...new Set([...Object.keys(t || {}), ...Object.keys(e || {})])].filter(i => !["updatedAt", "createdAt", "_base"].includes(i));
-async function Qe(t, e, i, n, o, r) {
+async function Qe(t, e, i, n, o, r, files) {
   let s = t.user,
     a = c => ({
       ok: !1,
@@ -207,6 +207,9 @@ async function Qe(t, e, i, n, o, r) {
           let y = Ln(h.text);
           if (!h.text || y < 1 || y > 1e3 || h.text.length > 2e4) throw new I(400, "\u5728\u7EBF\u6B63\u6587\u9700\u5728 1\u20131000 words \u4E4B\u95F4");
           h.words = y, delete h.link;
+        } else if (h.kind === 'upload') {
+          h.upload = await fqFileVersion(files,h.upload?.key,c);
+          delete h.link; delete h.text; delete h.words;
         } else {
           if (h.kind = "file", !/^https?:\/\//i.test(h.link || "")) return a("\u6587\u4EF6\u94FE\u63A5\u5FC5\u987B\u4EE5 http:// \u6216 https:// \u5F00\u5934");
           delete h.text;

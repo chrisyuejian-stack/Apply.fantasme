@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { Readable } from 'node:stream';
 import { randomBytes } from 'node:crypto';
 import { LocalDatabase } from './local-d1.mjs';
+import { LocalR2 } from './local-r2.mjs';
 import worker from '../dist/_worker.js';
 
 const root = resolve(import.meta.dirname, '..');
@@ -25,6 +26,7 @@ const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; cha
   '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.jpg': 'image/jpeg', '.json': 'application/json' };
 const env = {
   APPLY_DB: db,
+  FILES: new LocalR2(resolve(dataDir,'r2')),
   // Ephemeral by default: create the initial supervisor using the private file below.
   APPLY_SETUP_KEY: process.env.APPLY_SETUP_KEY || randomBytes(32).toString('hex'),
   SITE_URL: process.env.SITE_URL || 'https://www.fantasmearts.com',

@@ -39,6 +39,7 @@ const worker = {
     }
     return $t.fetch(request, {
       DB: env.APPLY_DB,
+      FILES: env.FILES,
       ASSETS: applicationAssets(env),
       SETUP_KEY: env.APPLY_SETUP_KEY,
       PBKDF2_ITERATIONS: env.PBKDF2_ITERATIONS,
