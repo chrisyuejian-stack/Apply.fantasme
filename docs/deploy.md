@@ -24,7 +24,7 @@
 
 - Secrets：`production` Environment 的 `CLOUDFLARE_API_TOKEN`（最小范围：Pages Edit、D1 Edit、Account 读；设有效期，迁移完成后收缩为仅 Pages Edit）、`CLOUDFLARE_ACCOUNT_ID`。值由主人在 GitHub 设置，不入库。
 - 工作流（Antigravity 另提 PR 实现，本页为需求）：
-  1. `provision-production.yml`：`workflow_dispatch` + 审批；创建 Pages 项目 `fantasme-apply`、D1 `fantasme-apply-prod`，建立 `APPLY_DB` 绑定；**幂等**，已存在则跳过。
+  1. `provision-production.yml`：`workflow_dispatch` + 审批；创建 Pages 项目 `fantasme-apply`、D1 `fantasme-apply-prod`（绑定 `APPLY_DB`），并支持幂等创建 R2 桶 `fantasme-apply-files` / `fantasme-apply-files-preview` 及绑定 `FILES` 到生产/preview；增量 `PATCH` 并校验既有 D1 与环境变量键完整保留；已存在则跳过。
   2. `migrate-d1.yml`：`workflow_dispatch` + 审批；在 runner 内 `wrangler d1 export fq-apply --remote` → 导入 `fantasme-apply-prod`，**不上传 artifact、不打印数据、不写入仓库**；结束时输出各表行数及 `records` 最大 `updated_at`、`audit` 最大 `id` 用于漂移校验。
   3. `deploy-production.yml`：`workflow_dispatch` + 审批；构建并 `pages deploy dist --project-name=fantasme-apply --branch=main`，**不执行任何 D1 DDL**。
 - 变量/密钥：`APPLY_SETUP_KEY`、`DEEPSEEK_API_KEY` 由主人在新项目后台直接填写（我们读不到旧值，也不转存）；`SITE_URL=https://www.fantasmearts.com`（保证 `/embed-login` CSP 与 `/__portal` 跳转）。
@@ -72,6 +72,16 @@
 
 ## Secrets / Bindings 清单（只列名，不含值；Grok-Ops 现场只读核对）
 - GitHub Environment：`preview` 与 `production` 各有 `CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`（两个环境使用独立 Token）。
-- `fantasme-apply`（生产）：Binding `APPLY_DB` → D1 `fantasme-apply-prod`；变量 `APPLY_SETUP_KEY`、`DEEPSEEK_API_KEY`、`SITE_URL`；自定义域名 `apply.fantasmearts.com`；preview 配置为空；无 KV/R2/DO/service 绑定。
-- `fantasme-apply-test`（Preview）：Binding `APPLY_DB` → D1 `fantasme-apply-test-db`；变量 `APPLY_SETUP_KEY`、`SITE_URL`（无 `DEEPSEEK_API_KEY`）；无自定义域名。
+- `fantasme-apply`（生产）：Binding `APPLY_DB` → D1 `fantasme-apply-prod`；Binding `FILES` → R2 `fantasme-apply-files`（M2，执行 `provision-production.yml` 后生效）；变量 `APPLY_SETUP_KEY`、`DEEPSEEK_API_KEY`、`SITE_URL`；自定义域名 `apply.fantasmearts.com`；preview 配置为空；无 KV/DO/service 绑定。
+- `fantasme-apply-test`（Preview）：Binding `APPLY_DB` → D1 `fantasme-apply-test-db`；Binding `FILES` → R2 `fantasme-apply-files-preview`（M2，执行 `provision-production.yml` 后生效）；变量 `APPLY_SETUP_KEY`、`SITE_URL`（无 `DEEPSEEK_API_KEY`）；无自定义域名。
 - `fantasme-academic`（旧，永久不动）：Bindings `APPLY_DB`→`fq-apply`、`EDU_DB`→`fq-edu`、`SITE_DB`→`fantasme-site-db`；变量 `ADMIN_PASSWORD`、`DEEPSEEK_API_KEY`；域名 `www`、`selftest`。
+
+## R2 备份方案（M2，先写方案，实施前须主人确认）
+
+- **背景**：M2 上线后，文书文件字节存于 R2 桶 `fantasme-apply-files`，**不进入** `/api/admin/export` 的 D1 JSON 备份；而业务数据库 `fantasme-apply-prod` 仅存文件元信息（`key`/`name`/`size`/`sha256`）。
+- **键不可变特性**：上传键采用 `docs/<studentId>/<documentId>/<uuid>`，只追加不覆盖，主要数据风险来自误删或孤儿清理任务误触发，因此备份重点是**防误删 + 异桶冷备**。
+- **建议方案（待主人确认后实施）**：
+  1. **源桶防护（`fantasme-apply-files`）**：保持私有（禁止 Public Bucket / Custom Domain 直暴露）；仅允许通过 Worker 鉴权读取。M2 孤儿清理仅删除「未在任何文书版本中引用且上传超过 24 小时」的对象；可选开启 R2 对象生命周期/版本保留窗口，防止程序误删即时不可恢复。
+  2. **独立异桶定期单向同步（推荐）**：新建仅归档用 R2 桶 `fantasme-apply-files-backup`（不绑定到 Pages 运行时、不与 `fantasme-academic` 或 `fengqin-*` 混用）。通过定期 GitHub Actions（独立 `backup` scoped 只读源桶 + 只写备份桶 Token，经 `rclone copy` 仅增量追加到备份桶、不自动执行 `--delete` 镜像传播，保留历史副本与 ≥30/90 天生命周期回滚窗口）。
+  3. **Preview 桶（`fantasme-apply-files-preview`）**：仅作开发/验收上传测试，不做跨桶备份，建议设置 30 天自动过期生命周期以控制存储成本。
+- **实施前待主人确认**：① 是否新建 `fantasme-apply-files-backup` 并配置定期单向 `rclone copy`（如每日一次）；② 清理/生命周期保留天数（如 90 天）。在主人明确确认前，不创建备份桶、不新增备份工作流。
