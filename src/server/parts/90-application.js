@@ -916,6 +916,30 @@ var D = (t, e = 200, i = {}) => new Response(JSON.stringify(t), {
     ...i
   }
 });
+// Bound raw bytes before parsing or allocating JSON; Content-Length is only an early check.
+async function fqReadLimitedBody(request, limit) {
+  const declared = request.headers.get('Content-Length');
+  if (declared !== null && /^\d+$/.test(declared) && Number(declared) > limit) throw new I(413, '请求体超过大小限制');
+  if (!request.body) return new Uint8Array();
+  const reader = request.body.getReader(), chunks = []; let size = 0;
+  try {
+    for (;;) {
+      const {done,value} = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > limit) { await reader.cancel().catch(() => {}); throw new I(413, '请求体超过大小限制'); }
+      chunks.push(value);
+    }
+  } finally { reader.releaseLock(); }
+  const bytes = new Uint8Array(size); let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk,offset); offset += chunk.byteLength; }
+  return bytes;
+}
+async function fqReadImportRequest(request) {
+  const bytes = await fqReadLimitedBody(request,20 * 1024 * 1024);
+  try { return JSON.parse(new TextDecoder().decode(bytes)); }
+  catch { throw new I(400, '请求内容不是有效的 JSON'); }
+}
 async function X(t) {
   try {
     return await t.json();
@@ -929,7 +953,7 @@ async function Vn(t, e, i) {
   if (e.role !== "supervisor") throw new I(403, "\u53EA\u6709\u7533\u8BF7\u4E3B\u7BA1\u53EF\u4EE5\u5F7B\u5E95\u5220\u9664\u5B66\u751F");
   let n = await ue(t, "students", i);
   if (!n) throw new I(404, "\u5B66\u751F\u4E0D\u5B58\u5728\u6216\u5DF2\u5220\u9664");
-  let o = (await t.DB.prepare("SELECT tbl, COUNT(*) AS n FROM records WHERE student_id = ? GROUP BY tbl").bind(i).all()).results,
+  let o = (await t.DB.prepare("SELECT tbl, COUNT(*) AS n FROM records WHERE student_id = ? AND tbl NOT GLOB '__imp:*' GROUP BY tbl").bind(i).all()).results,
     r = (await t.DB.prepare("SELECT id FROM users WHERE role = 'student' AND student_id = ?").bind(i).all()).results.map(s => s.id);
   return await t.DB.batch([t.DB.prepare("DELETE FROM records WHERE student_id = ?").bind(i), t.DB.prepare("DELETE FROM records WHERE tbl = 'students' AND id = ?").bind(i), ...r.map(s => t.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(s)), t.DB.prepare("DELETE FROM users WHERE role = 'student' AND student_id = ?").bind(i)]), await N(t, e.id, "student-purge", "students", i, `${n.name || ""}\uFF1A` + o.map(s => `${s.tbl} ${s.n}`).join("\uFF0C") + (r.length ? `\uFF0C\u5B66\u751F\u8D26\u53F7 ${r.length}` : "")), D({
     ok: !0
@@ -1276,8 +1300,8 @@ async function Xn(t, e) {
 async function Jn(t, e) {
   let i = await de(t, e),
     n = (e.role === 'supervisor'
-      ? await t.DB.prepare('SELECT tbl, data FROM records').all()
-      : await t.DB.prepare("SELECT tbl, data FROM records WHERE student_id IN (SELECT value FROM json_each(?))" + (ve(e) ? " OR tbl='templates'" : '') + ' ORDER BY rowid').bind(JSON.stringify([...i.visible])).all()).results,
+      ? await t.DB.prepare("SELECT tbl, data FROM records WHERE tbl NOT GLOB '__imp:*'").all()
+      : await t.DB.prepare("SELECT tbl, data FROM records WHERE (student_id IN (SELECT value FROM json_each(?))" + (ve(e) ? " OR tbl='templates'" : '') + ") AND tbl NOT GLOB '__imp:*' ORDER BY rowid").bind(JSON.stringify([...i.visible])).all()).results,
     o = Object.fromEntries(we.map(a => [a, []])),
     r = {};
   for (let a of n) if (a.tbl === "documents") {
@@ -1579,7 +1603,7 @@ async function fqImportBackup(env, backup) {
 }
 async function ni(t, e, i, n, o) {
   if (Qt(i), n === "export" && o === "GET") {
-    let r = (await e.DB.prepare("SELECT tbl, data FROM records").all()).results,
+    let r = (await e.DB.prepare("SELECT tbl, data FROM records WHERE tbl NOT GLOB '__imp:*'").all()).results,
       s = {
         format: "fq-admissions",
         version: 2,
@@ -1592,7 +1616,7 @@ async function ni(t, e, i, n, o) {
     });
   }
   if (n === "import" && o === "POST") {
-    const r = await X(t);
+    const r = await fqReadImportRequest(t);
     const s = await fqImportBackup(e, r);
     return await N(e, i.id, "import"), D({
       ok: !0,
