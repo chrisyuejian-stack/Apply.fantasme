@@ -53,8 +53,10 @@ async function fqFileObject(storage, key, method) {
 }
 function fqFileInfo(object) {
   if (!object) throw new I(404,'文件不存在');
-  const name = fqFileName(object.customMetadata?.fileName), {type} = fqFileType(name,object.httpMetadata?.contentType);
-  const size = object.size, sha256 = object.customMetadata?.sha256;
+  // R2 读回的 customMetadata 键名大小写不作假设（S3 兼容层会转小写），统一按小写匹配。
+  const meta = Object.fromEntries(Object.entries(object.customMetadata || {}).map(([k,v]) => [String(k).toLowerCase(),v]));
+  const name = fqFileName(meta.filename), {type} = fqFileType(name,object.httpMetadata?.contentType);
+  const size = object.size, sha256 = meta.sha256;
   if (!Number.isSafeInteger(size) || size < 0 || size > fqFileLimit || !/^[0-9a-f]{64}$/.test(sha256 || '')) throw new I(409,'文件元数据无效');
   return {key:object.key,name,size,type,sha256};
 }
