@@ -8983,7 +8983,7 @@ async function fqDocumentAction(req, env, user, id, action) {
     record = {id:'r-'+crypto.randomUUID(),documentId:id,studentId:doc.studentId,versionId:doc.currentVersionId,stage:proxy?'student':b.stage,userId:user.id,decision:proxy?'approve':b.decision,comment:String(b.comment || '').slice(0,4000),createdAt:now,updatedAt:now};
     if (proxy) record.proxy = true;
     else {
-      if (!['advisor','supervisor','student'].includes(record.stage) || !['approve','changes'].includes(record.decision) || doc.status === 'final') throw new I(400, '审核操作不正确');
+      if (!['advisor','supervisor','student'].includes(record.stage) || !['approve','changes'].includes(record.decision) || (doc.status === 'final' && !(record.decision === 'changes' && ['advisor','supervisor'].includes(record.stage)))) throw new I(400, '审核操作不正确');
       const ctx = await de(env,user);
       const check = await Qe(ctx, 'reviews', 'put', null, record, (tbl,key)=>ue(env,tbl,key));
       if (!check.ok) throw new I(403,check.error);
