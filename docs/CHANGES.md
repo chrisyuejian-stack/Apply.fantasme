@@ -16,4 +16,5 @@
 | 2026-11-26 | `src/server/application.js`（现 `parts/90-application.js`） | BUG-02 导入先校验、唯一前缀暂存、租约串行、单 batch 原子切换；BUG-03 写接口同源校验（`Origin`/`Sec-Fetch-Site`）；BUG-05 DIY `mustChange` 后端拦截；性能 A：`bootstrap` 可见性下推到 SQL（`json_each`） | PR #31/#32/#38/#40 |
 | 2026-11-26 | `src/server/ai.js` | 性能 A：`fqaiAuditAll` 按学生分组，消除 O(S·R) | PR #40 |
 | 2026-11-26 | `tests/regression/`、`tests/e2e/`、`scripts/perf-bench.mjs` | 合法更新夹具补 `_base`（保留缺省 `_base` 必须 409 的探针）；`browser_audit.py` 改用 `localhost` 以符合同源校验 | PR #35/#41 |
+| 2026-11-26 | `src/server/parts/` | M1-1b：种子数据 `Ye` 拆到 `00-seed-data.js`、演示数据 `Ze` 拆到 `01-demo-data.js`，内容未改；`dist/_worker.js` sha256 前后均为 `2ea4d186…303e` | 本 PR |
 | 2026-11-26 | `src/client/app/parts/`、`public/apply/app/app.js` | M1-1d：前端拆为 5 个片段，`public/apply/app/app.js` 改为生成文件（`npm run build:client`），内容未变：`dist/apply/app/app.js` sha256 前后均为 `3547b153…a73a` | 本 PR |
