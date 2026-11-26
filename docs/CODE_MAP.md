@@ -12,7 +12,18 @@
 | --- | --- |
 | `00-seed-data.js` | `Ye`：首次安装种子（任务模板 + 院校要求库初始版本），**只在 `/api/setup` 使用** |
 | `01-demo-data.js` | `Ze`：演示数据（`/api/setup` 勾选演示、`/api/admin/demo`） |
-| `90-application.js` | 业务代码 |
+| `10-crypto-session.js` | 口令（PBKDF2）、会话 Cookie |
+| `20-permissions.js` | 业务表清单 `we`、可见性 `de`、脱敏 `Be`、写入规则 `Qe` |
+| `30-diy.js` | DIY 免费版：会话、业务、主管管理（`Vt`） |
+| `40-database-helpers.js` | 建表 `qn`/`Hn`、响应与请求体、通用 DB、院校库读写、`rt`/`Jt` |
+| `50-worker.js` | Worker 入口对象 `$t` |
+| `55-documents.js` | 文书原子动作 `fqDocumentAction` |
+| `60-router.js` | 页面/资源 `Wn`、同源校验、API 分派 `Yn` |
+| `70-setup-login.js` | 首次安装 `Zn`、登录 `Xn` |
+| `75-bootstrap.js` | 工作台数据 `Jn` |
+| `80-records.js` | 通用记录增删改 `$n` |
+| `85-users.js` | 账号管理 |
+| `90-admin.js` | 导入锁/校验/暂存、管理路由 `ni` |
 
 **院校要求库的数据源是 D1**（`meta` 表 `reqdb:head`、`reqdb:school:<id>`），管理端「院校要求库」导出（`GET /api/reqdb`）/导入（`PUT /api/reqdb`，整体替换）维护；`Ye.reqdb` 不是线上数据源，会逐渐落后于 D1 中的版本。
 
