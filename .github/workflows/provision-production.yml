@@ -1,0 +1,142 @@
+name: Provision Production (fantasme-apply)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-ops
+  cancel-in-progress: false
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 10
+    steps:
+      - name: Guard target names and secrets
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          PROJECT_NAME="fantasme-apply"
+          D1_NAME="fantasme-apply-prod"
+
+          if [ "$PROJECT_NAME" = "fantasme-academic" ] || [ "$D1_NAME" = "fq-apply" ]; then
+            echo "::error::Forbidden legacy target detected."
+            exit 1
+          fi
+          if [ -z "$CF_TOKEN" ] || [ -z "$CF_ACCOUNT" ]; then
+            echo "::error::Missing CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID in the 'production' GitHub Environment secrets."
+            exit 1
+          fi
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Provision D1 database, Pages project, and APPLY_DB binding (idempotent)
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          node <<'EOF'
+          const accountId = process.env.CF_ACCOUNT;
+          const token = process.env.CF_TOKEN;
+          const PROJECT = 'fantasme-apply';
+          const D1_NAME = 'fantasme-apply-prod';
+
+          if (PROJECT !== 'fantasme-apply' || D1_NAME !== 'fantasme-apply-prod') {
+            throw new Error('Forbidden target configuration');
+          }
+
+          async function cf(method, path, body) {
+            const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}${path}`, {
+              method,
+              headers: {
+                Authorization: `Bearer ${token}`,
+                'Content-Type': 'application/json',
+              },
+              body: body === undefined ? undefined : JSON.stringify(body),
+            });
+            const data = await res.json();
+            return { status: res.status, data };
+          }
+
+          async function main() {
+            // 1. Ensure D1 database fantasme-apply-prod exists (idempotent)
+            const listRes = await cf('GET', `/d1/database?name=${encodeURIComponent(D1_NAME)}&per_page=100`);
+            if (!listRes.data?.success) {
+              throw new Error(`D1 list failed (${listRes.status}): ${JSON.stringify(listRes.data?.errors || [])}`);
+            }
+            let db = (listRes.data.result || []).find((d) => d.name === D1_NAME);
+            if (db) {
+              console.log(`D1 database '${D1_NAME}' already exists (uuid=${db.uuid}), skipping creation.`);
+            } else {
+              const createDb = await cf('POST', '/d1/database', { name: D1_NAME });
+              if (!createDb.data?.success || !createDb.data?.result?.uuid) {
+                throw new Error(`D1 create failed (${createDb.status}): ${JSON.stringify(createDb.data?.errors || [])}`);
+              }
+              db = createDb.data.result;
+              console.log(`Created D1 database '${D1_NAME}' (uuid=${db.uuid}).`);
+            }
+
+            // 2. Ensure Pages project fantasme-apply exists (idempotent)
+            let projRes = await cf('GET', `/pages/projects/${PROJECT}`);
+            if (projRes.status === 200 && projRes.data?.success) {
+              console.log(`Pages project '${PROJECT}' already exists, skipping creation.`);
+            } else if (projRes.status === 404) {
+              const createProj = await cf('POST', '/pages/projects', {
+                name: PROJECT,
+                production_branch: 'main',
+              });
+              if (!createProj.data?.success) {
+                throw new Error(`Pages project create failed (${createProj.status}): ${JSON.stringify(createProj.data?.errors || [])}`);
+              }
+              console.log(`Created Pages project '${PROJECT}' (production_branch=main).`);
+              projRes = await cf('GET', `/pages/projects/${PROJECT}`);
+            } else {
+              throw new Error(`Pages project lookup failed (${projRes.status}): ${JSON.stringify(projRes.data?.errors || [])}`);
+            }
+
+            // 3. Ensure production D1 binding APPLY_DB -> fantasme-apply-prod (idempotent)
+            const currentProdD1 = projRes.data?.result?.deployment_configs?.production?.d1_databases || {};
+            const currentId = currentProdD1.APPLY_DB?.id || '';
+            if (currentId === db.uuid) {
+              console.log(`Pages binding 'APPLY_DB' already points to '${D1_NAME}' (${db.uuid}), skipping patch.`);
+            } else {
+              const mergedD1 = {};
+              for (const [k, v] of Object.entries(currentProdD1)) {
+                if (v && v.id) mergedD1[k] = { id: v.id };
+              }
+              mergedD1.APPLY_DB = { id: db.uuid };
+
+              const patchRes = await cf('PATCH', `/pages/projects/${PROJECT}`, {
+                deployment_configs: {
+                  production: {
+                    d1_databases: mergedD1,
+                  },
+                },
+              });
+              if (!patchRes.data?.success) {
+                throw new Error(`Pages binding update failed (${patchRes.status}): ${JSON.stringify(patchRes.data?.errors || [])}`);
+              }
+              const verifyRes = await cf('GET', `/pages/projects/${PROJECT}`);
+              const verifiedId = verifyRes.data?.result?.deployment_configs?.production?.d1_databases?.APPLY_DB?.id || '';
+              if (verifiedId !== db.uuid) {
+                throw new Error(`APPLY_DB binding verification mismatch: expected ${db.uuid}, got ${verifiedId}`);
+              }
+              console.log(`Bound Pages '${PROJECT}' production.APPLY_DB -> '${D1_NAME}' (${db.uuid}).`);
+            }
+          }
+
+          main().catch((err) => {
+            console.error(err.message || err);
+            process.exit(1);
+          });
+          EOF
