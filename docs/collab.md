@@ -6,8 +6,8 @@
 
 | 角色 | 主责 | 可写区域 | 不做 |
 |---|---|---|---|
-| **Claude** | 方案/ADR、前端模块化（含 BUG-10~12）、符号命名映射、协作文档；高风险项设计稿 | `docs/`、已认领的 `public/` 文件 | 全量性能测试、线上操作 |
-| **GPT/Codex** | `src/server/` 缺陷修复（BUG-01~09）、按设计稿实现性能优化、补回归断言 | 已认领的 `src/server/` 文件 | 前端重构、部署 |
+| **Claude** | 高风险项（BUG-02/03/05、bootstrap 裁剪）**只出设计稿**；前端小步修复（BUG-10~12）；协作文档；上线前设计审阅 | `docs/`、已认领的 `public/` 文件 | 全量性能测试、线上操作 |
+| **GPT/Codex** | `src/server/` 全部缺陷的**实现**：低风险 Bug 自行修复，高风险项按 Claude 设计稿实现；补回归断言 | 已认领的 `src/server/` 文件 | 前端重构、部署 |
 | **Antigravity** | 回归/E2E/性能验收、Preview 部署、按 BUG 编号回归并更新 status | `tests/`、`scripts/perf-bench.mjs`、`docs/testing/`、`.github/workflows/` | 改业务代码 |
 | **Grok-Ops** | 只读：生产对齐核查、平台限制实测、preview 红队、外部链路验证、上线后巡检、对抗性第二意见 | 无（只发带前缀的评论/issue） | 写仓库、写 D1、攻击生产、输出学生数据 |
 
@@ -18,6 +18,14 @@
 3. 低风险 Bug：GPT → Antigravity。高风险项走：
    `Claude 设计稿 → Grok 红队审设计 → GPT 实现 → Antigravity 回归/性能 → Grok preview 实测+对齐 → 主人确认`
 4. 多视角交叉审阅**仅**用于：架构/ADR、D1 或权限变更、上线前门禁。
+
+## 额度保护（Claude 额度最少，只做稀缺判断）
+
+- Claude 不做低风险修复，不实现高风险后端项（只出设计稿：契约、改法、回滚点）。
+- 前端一次一个 BUG、一个 PR；不整文件通读 `app.js`/`application.js`，用 CODE_MAP 符号和 grep 定位。
+- 每个任务开新会话，只读本页"开工必读"。
+- 额度吃紧时，BUG-10 等纯 CSS 项转 GPT，Claude 只保留设计与审阅。
+- 独立审阅（Grok 红队、Antigravity 验收）不转给 Claude，避免自审盲点。
 
 ## 评论与防环
 
