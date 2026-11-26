@@ -45,3 +45,16 @@ D1/SQLite 的 `records(tbl,id,student_id,data,updated_at)` 按业务表名和记
 ## 本地与生产边界
 
 `scripts/local-d1.mjs` 只实现当前调用所需的 prepare/bind/first/all/run/batch 子集，不是 Cloudflare D1 全功能模拟器。本地服务串行进入共享 SQLite 连接，避免开发适配器的事务互相交错；这不验证生产并发。Cloudflare 平台限制、D1 分布式行为、联网 AI、浏览器完整交互仍需另行验证。
+
+## 前端源码（M1-1d）
+
+主前端源码在 `src/client/app/parts/`，按文件名前缀原样拼接成 `public/apply/app/app.js`（`npm run build:client`；生成文件需一起提交，`tests/client-parts.test.mjs` 校验一致，**不要直接改生成文件**）。单个 IIFE，片段之间共享作用域。
+
+| 片段 | 内容 |
+| --- | --- |
+| `00-core.js` | 常量、工具函数、权限与数据存储（`bt` 等） |
+| `10-api-render.js` | API 客户端 `ge` 与通用渲染组件 |
+| `20-actions.js` | 业务动作表 `ms`（`data-act` 事件） |
+| `30-nav-pages.js` | 导航动作 `zs` 与各页面 |
+| `40-diy-boot.js` | DIY 免费版、启动与 `window.FQAPP` 导出 |
+
