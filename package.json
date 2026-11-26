@@ -6,7 +6,8 @@
     "build": "node scripts/build.mjs",
     "test": "npm run build && node --test tests/*.test.mjs",
     "dev": "npm run build && node scripts/dev.mjs",
-    "verify:baseline": "node scripts/verify-baseline.mjs"
+    "verify:baseline": "node scripts/verify-baseline.mjs",
+    "bundle:hash": "npm run build && node scripts/bundle-hash.mjs"
   },
   "engines": {
     "node": ">=24"
