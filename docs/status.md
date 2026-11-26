@@ -13,14 +13,14 @@
 ## 环境状态
 | 环境 | 状态 |
 |---|---|
-| Preview `fantasme-apply-test` | 工作流就绪，最近一次部署：未记录 |
+| Preview `fantasme-apply-test` | 工作流就绪；最近一次部署：Run `45806316335` 成功（`https://45bdd376.fantasme-apply-test.pages.dev` / 别名 `https://preview.fantasme-apply-test.pages.dev`） |
 | Production `fantasme-academic` | **锁定**。线上与恢复基线未对齐，11 月 1 日部署待核对 |
 
 ## 阻塞项 / 待办
 1. ~~合入审计分支~~ 已完成（PR #4）。
-2. **Antigravity**：另提 PR 收紧 `deploy.yml` 评论触发（仅限 OWNER 本人的 `/deploy preview`，拒绝带角色前缀的评论）。
+2. ~~**Antigravity**：另提 PR 收紧 `deploy.yml` 评论触发（仅限 OWNER 本人的 `/deploy preview`，拒绝带角色前缀的评论）。~~ 已提交收紧修改（拒绝带 `[角色]` 前缀评论）。
 3. **Grok-Ops**：已确认可读 D1 表结构与 Pages 配置，开始填写 deploy.md 的生产对齐核查表；若发现读不到，由主人给出补充 prompt。
-4. 本地验证用 Node 22.23.5，`.node-version` 要求 24，Node 24 下需 Antigravity 复验。
+4. ~~本地验证用 Node 22.23.5，`.node-version` 要求 24，Node 24 下需 Antigravity 复验。~~ Antigravity 已在 Node `v24.22.3` 复验 `npm run verify:baseline`（16/16）与 `npm test`（12/12）通过。
 5. GPT 开始修复前先读本页文件认领表；截至更新时远端无其分支/PR。
 
 ## Bug 归属（证据见 `git show origin/test/apply-v2.2.1-audit:docs/testing/TEST_REPORT.md`）
