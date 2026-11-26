@@ -3273,19 +3273,16 @@
           required: !0
         }),
         submitLabel: "重新打开",
-        onSubmit: t => {
-          st.put("reviews", {
-            id: i("r"),
-            documentId: e.id,
-            studentId: e.studentId,
-            versionId: e.currentVersionId,
+        onSubmit: async t => {
+          await st.flush();
+          await ge.call("POST", `/documents/${encodeURIComponent(e.id)}/review`, {
+            base: e.updatedAt,
+            versionId: e.currentVersionId || null,
             stage: de() ? "supervisor" : "advisor",
-            userId: ae().id,
             decision: "changes",
             comment: t.comment
-          }), st.patch("documents", e.id, {
-            status: "revising"
-          }), Jt(e.studentId, null, e.title + " 重新打开修改", !1), Vs();
+          });
+          await st.load(), Vs(), Ae("已重新打开修改");
         }
       });
     },
