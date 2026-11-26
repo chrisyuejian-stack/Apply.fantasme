@@ -192,17 +192,20 @@ async function benchWorkerMemory(studentCounts) {
       if (r.status === 200) { bootLat.push(r.ms); bootBytes = r.bytes; } else bootErr++;
     }
 
+    const bootSnap = (await call('/api/bootstrap', 'GET', undefined, cookie)).data.data;
+    const taskBases = Object.fromEntries(bootSnap.tasks.filter(t => t.studentId === 'syn-stu-0').map(t => [t.id, t.updatedAt]));
     const putLat = []; let putErr = 0;
     for (let i = 0; i < 15; i++) {
-      const r = await call(`/api/t/tasks/syn-tsk-0-${i % 10}`, 'PUT', {
-        id: `syn-tsk-0-${i % 10}`, studentId: 'syn-stu-0', applicationId: 'syn-app-0-0', title: `更新任务_${i}`, status: 'doing',
+      const tid = `syn-tsk-0-${i % 10}`;
+      const r = await call(`/api/t/tasks/${tid}`, 'PUT', {
+        id: tid, studentId: 'syn-stu-0', applicationId: 'syn-app-0-0', title: `更新任务_${i}`, status: 'doing', _base: taskBases[tid],
       }, cookie);
-      if (r.status === 200) putLat.push(r.ms); else putErr++;
+      if (r.status === 200) { putLat.push(r.ms); taskBases[tid] = r.data.record.updatedAt; } else putErr++;
     }
 
     // 文书修订耗时（递增版本，每次使用最新 updatedAt）
     const revLat = []; let revErr = 0;
-    let docSnap = (await call('/api/bootstrap', 'GET', undefined, cookie)).data.data.documents.find(d => d.id === 'syn-doc-0-0');
+    let docSnap = bootSnap.documents.find(d => d.id === 'syn-doc-0-0');
     for (let i = 0; i < 10; i++) {
       const r = await call('/api/documents/syn-doc-0-0/revise', 'POST', {
         base: docSnap.updatedAt, versionId: docSnap.currentVersionId, text: `Revised essay version ${i} with unique content ${Math.random()}`, note: `rev ${i}`,

@@ -127,7 +127,7 @@ test('权限矩阵与安全全面审计', async (t) => {
         assert.equal((await h.call('/api/t/documents/doc-b', { method: 'PUT', cookie: wrtA, body: { id: 'doc-b', studentId: 'stu-b', title: '改' } })).status, 403);
         assert.equal((await h.call('/api/ai/essay', { method: 'POST', cookie: wrtA, body: { op: 'length', docId: 'doc-b', text: 'hello' } })).status, 403);
         assert.equal((await h.call('/api/t/tasks/tsk-a', { method: 'PUT', cookie: wrtA, body: { id: 'tsk-a', studentId: 'stu-a', applicationId: 'app-a', title: '篡改标题', assigneeId: ids.uWrtA, status: 'doing' } })).status, 403);
-        assert.equal((await h.call('/api/t/tasks/tsk-a', { method: 'PUT', cookie: wrtA, body: { id: 'tsk-a', studentId: 'stu-a', applicationId: 'app-a', title: '学生A任务', assigneeId: ids.uWrtA, status: 'doing' } })).status, 200);
+        assert.equal((await h.call('/api/t/tasks/tsk-a', { method: 'PUT', cookie: wrtA, body: { id: 'tsk-a', studentId: 'stu-a', applicationId: 'app-a', title: '学生A任务', assigneeId: ids.uWrtA, status: 'doing', _base: bootWrtA.data.tasks.find(x => x.id === 'tsk-a').updatedAt } })).status, 200);
 
         const bootStuA = (await h.call('/api/bootstrap', { cookie: stuA })).data;
         assert.deepEqual(bootStuA.data.students.map(s => s.id), ['stu-a']);
