@@ -49,7 +49,7 @@ def start_server(data_dir):
 def run_audit():
     data_dir = Path(tempfile.mkdtemp(prefix="apply-browser-"))
     proc, port = start_server(data_dir)
-    base_url = f"https://127.0.0.1:{port}"
+    base_url = f"https://localhost:{port}"
     report = {
         "base_url": base_url,
         "checks": [],
