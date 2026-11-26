@@ -195,11 +195,11 @@ test('功能与数据一致性全面测试（本地 HTTPS + Worker 隔离环境�
     const h = await createWorkerHarness();
     try {
       const sup = extractCookie((await h.call('/api/setup', { method: 'POST', body: { setupKey: h.env.APPLY_SETUP_KEY, name: '主管', username: 'sup', password: 'SupPassword2026', demo: false } })).headers);
-      await h.call('/api/t/students/stu-1', { method: 'PUT', cookie: sup, body: { id: 'stu-1', name: '学生甲' } });
+      const stu0 = (await h.call('/api/t/students/stu-1', { method: 'PUT', cookie: sup, body: { id: 'stu-1', name: '学生甲' } })).data.record;
       const stuUser = await h.call('/api/users', { method: 'POST', cookie: sup, body: { username: 'stu1', name: '学生甲', role: 'student', studentId: 'stu-1' } });
       const advUser = await h.call('/api/users', { method: 'POST', cookie: sup, body: { username: 'adv1', name: '顾问甲', role: 'advisor' } });
       const wrtUser = await h.call('/api/users', { method: 'POST', cookie: sup, body: { username: 'wrt1', name: '文书甲', role: 'writer' } });
-      await h.call('/api/t/students/stu-1', { method: 'PUT', cookie: sup, body: { id: 'stu-1', name: '学生甲', advisorId: advUser.data.user.id, writerIds: [wrtUser.data.user.id] } });
+      await h.call('/api/t/students/stu-1', { method: 'PUT', cookie: sup, body: { id: 'stu-1', name: '学生甲', advisorId: advUser.data.user.id, writerIds: [wrtUser.data.user.id], _base: stu0.updatedAt } });
 
       async function loginAndChange(username, initPw, newPw) {
         const c = extractCookie((await h.call('/api/login', { method: 'POST', body: { username, password: initPw } })).headers);
