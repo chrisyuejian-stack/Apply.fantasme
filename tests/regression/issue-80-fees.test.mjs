@@ -52,6 +52,7 @@ test('#80: fee visibility and actor matrix, generic writes and browser gates',as
 
 test('#80: integer money, whitelisted fields, bounds, edits, history and reference uniqueness',async()=>{
  const h=await fixture();try{
+  for(const studentId of [123,null,[],{},'../student-one']) assert.equal((await h.create({studentId},h.sup)).status,400);
   for(const amountFen of [0,-1,1.1,'100',100000001,null]) assert.equal((await h.create({items:[{label:'bad',amountFen}]})).status,400);
   for(const extra of [{title:''},{title:'x'.repeat(81)},{items:[]},{items:Array.from({length:51},()=>({label:'fee',amountFen:1}))},{studentNote:'x'.repeat(501)},{dueDate:'2026-02-30'}]) assert.equal((await h.create(extra)).status,400);
   const r=await h.create({totalFen:1,refCode:'forged',status:'confirmed',history:[],confirmedBy:'forged',applicationId:'forged'});assert.equal(r.status,200,r.text);
