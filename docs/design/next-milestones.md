@@ -43,26 +43,33 @@
 **淘汰外部链接（M2 之后，主人定时间）**：先隐藏「新建外部链接」，旧链接继续可打开；不删历史数据。
 
 ---
-## M3 任务板与助理系统对接
+## M3 任务板与助理系统对接（实施版，2026-11-27）
 
-**助理系统现状（读其仓库）**：Worker `fengqin-assistant`，待办存在主人的 Outlook；已有 `*/10 * * * *` 定时任务；与 Mac mini 桥接采用「命令下发 + 回执」的拉取模式。M3 沿用**拉取模式**：申请系统不主动调用助理，避免在申请系统里存助理的密钥和重试逻辑。
+**主人已定**：普通待办（标题、备注、重要性、截止日期、负责顾问）；关联学生直接写在任务内容里；顾问完成后同步回助理系统，助理只需知道（写入其记忆）。
 
-**申请系统数据（只加类型名）**：`records` 新增业务表名 `boardTasks`（加入 `we`），`student_id` 为空。JSON：
-`{ id, title, note, importance: "high"|"normal"|"low", due, assigneeId, status: "open"|"done", doneAt, doneBy, source: "assistant"|"manual", externalId, studentHint, createdAt, updatedAt }`
-- 可见性：`assigneeId` 本人 + 主管；顾问可改状态与备注，主管可增删改派。
-- 关联学生不做外键，直接写在 `title/note`（主人要求）；`studentHint` 仅作文本。
+**助理系统现状（读其仓库）**：Worker `fengqin-assistant`，有 `*/10 * * * *` 定时任务；与 Mac mini 桥接用「拉取」模式。M3 同样**由助理推送、由助理拉取**，申请系统不主动调用助理、不存助理密钥。对接契约单独写在 [`docs/integrations/assistant.md`](../integrations/assistant.md)，两边以它为准。
 
-**接口（申请系统侧，均为服务端对服务端）**
-- 鉴权：共享密钥 `ASSISTANT_BRIDGE_SECRET`（两边各存一份）。请求头 `X-FQ-Timestamp` + `X-FQ-Signature = HMAC-SHA256(secret, timestamp + "\n" + method + "\n" + path + "\n" + body)`；时间差 > 5 分钟拒绝。这些路由**豁免同源校验与 Cookie**，只认签名。
-- `POST /api/integrations/assistant/tasks`：`{ externalId, title, note?, importance, due?, assignee }`，`assignee` 为顾问的登录名；按 `externalId` 幂等（重复推送只更新）。返回 `{ id, status }`。
-- `GET /api/integrations/assistant/updates?since=<ISO>`：返回 `since` 之后状态变化的、`source=assistant` 的任务 `[{ externalId, status, doneAt, doneBy(姓名), note }]`，最多 200 条。助理在 10 分钟定时任务里拉取，写入自己的记忆。
-- `GET /api/integrations/assistant/advisors`：返回可指派的顾问 `[{ username, name }]`，供助理选择。
+### 数据（只加类型名，不改表结构）
+`records` 新增业务表名 **`boardTasks`**（加入 `20-permissions.js` 的 `we`），`student_id` 为 `NULL`。JSON：
+`{ id, title, note, importance: "high"|"normal"|"low", due: "YYYY-MM-DD"|null, assigneeId, status: "open"|"done", doneAt, doneBy, source: "assistant"|"manual", externalId, createdBy, createdAt, updatedAt }`
 
-**前端**：顾问「我的任务」页（按截止日期与重要性排序、逾期标红、一键完成）；主管看全部并可手动新建。首页加计数。
+### 权限（三处都要改，缺一处就会漏或泄露）
+1. **可见性 `Be`**：`boardTasks` 不走学生可见性；主管看全部，`advisor` 只看 `assigneeId === 自己`；其他角色（文书、学生、DIY）一律不可见。
+2. **bootstrap（`75-bootstrap.js`）**：非主管的 SQL 下推按 `student_id IN (...)` 过滤，`boardTasks` 的 `student_id` 为空会被整体漏掉。须在条件中加 `OR tbl='boardTasks'`（仅员工角色），再由 `Be` 按负责人过滤。
+3. **写入 `Qe`**：主管可新建、改派、删除；负责顾问只能改 `status` 与 `note`（其他字段以库中原值覆盖）；完成时服务端写 `doneAt`、`doneBy`；`source`/`externalId` 只能由对接接口写，普通接口提交时忽略。
 
-**助理系统侧（需在其仓库另做，由其协作者实现）**：新增「推给顾问」工具（对话中说"让某某顾问做…"即调用 `POST …/tasks`）；定时任务拉取 `/updates` 写入记忆；在其 Secrets 中加 `ASSISTANT_BRIDGE_SECRET` 与申请系统地址。接口以本节为准。
+### 对接接口（服务端对服务端）
+- 路由前缀 `/api/integrations/assistant/`，在 `60-router.js` 中**位于 `X-FQ` 与同源校验之前**分派，**只认 HMAC 签名**，不读 Cookie；其他任何 `/api/*` 路由行为不变。
+- 签名、时间窗、三个接口（推送任务、拉取更新、列出顾问）的请求与响应格式见对接契约文档。
+- 未配置 `ASSISTANT_BRIDGE_SECRET` 时这些路由一律 503；签名错误 401；不返回任何学生档案数据。
 
-**安全**：只开放上述三个路由；签名失败统一 401；限流；不返回任何学生档案数据。
+### 前端（Claude）
+- 新导航「任务板」（主管、顾问可见）：按「逾期 / 今天 / 本周 / 之后 / 已完成」分组，重要性标色，一键完成，可写备注；来源为助理的显示「来自助理」。
+- 主管：查看全部、按负责人筛选、手动新建与改派。
+- 工作台增加「待办任务」计数。
+
+### 助理系统侧（在其仓库实施，由其协作者完成）
+按对接契约：新增「推给顾问」对话工具；在 10 分钟定时任务中拉取更新并写入记忆；保存 `ASSISTANT_BRIDGE_SECRET` 与申请系统地址。
 
 ---
 ## 顺序与分工建议
