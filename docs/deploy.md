@@ -72,9 +72,14 @@
 
 ## Secrets / Bindings 清单（只列名，不含值；Grok-Ops 现场只读核对）
 - GitHub Environment：`preview` 与 `production` 各有 `CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`（两个环境使用独立 Token）。
-- `fantasme-apply`（生产）：Binding `APPLY_DB` → D1 `fantasme-apply-prod`；Binding `FILES` → R2 `fantasme-apply-files`（M2，执行 `provision-production.yml` 后生效）；变量 `APPLY_SETUP_KEY`、`DEEPSEEK_API_KEY`、`SITE_URL`；自定义域名 `apply.fantasmearts.com`；preview 配置为空；无 KV/DO/service 绑定。
-- `fantasme-apply-test`（Preview）：Binding `APPLY_DB` → D1 `fantasme-apply-test-db`；Binding `FILES` → R2 `fantasme-apply-files-preview`（M2，执行 `provision-production.yml` 后生效）；变量 `APPLY_SETUP_KEY`、`SITE_URL`（无 `DEEPSEEK_API_KEY`）；无自定义域名。
+- `fantasme-apply`（生产）：Binding `APPLY_DB` → D1 `fantasme-apply-prod`；Binding `FILES` → R2 `fantasme-apply-files`（已通过 Run `45847544911` 绑定）；机密变量 `APPLY_SETUP_KEY`、`DEEPSEEK_API_KEY`、`ASSISTANT_BRIDGE_SECRET`（M3，≥32 字符随机值，如 `openssl rand -hex 32`，分别填入 Pages 后台与 `fengqin-assistant` 生产 Worker，**生产与 preview 必须使用不同密钥，AI 不经手明文**）；明文变量 `SITE_URL`、`BOARD_V12_ENABLED`（默认不设置 = 关闭；仅当设为 `"1"` 时开启 v1.2 公开任务板与 `/cancel`，见下方 M3 上线顺序）；自定义域名 `apply.fantasmearts.com`；preview 配置为空；无 KV/DO/service 绑定。
+- `fantasme-apply-test`（Preview）：Binding `APPLY_DB` → D1 `fantasme-apply-test-db`；Binding `FILES` → R2 `fantasme-apply-files-preview`（已通过 Run `45847544911` 绑定）；机密变量 `APPLY_SETUP_KEY`、`ASSISTANT_BRIDGE_SECRET`（M3，独立 preview 随机密钥，分别填入 Pages preview 配置与助理预览环境）；明文变量 `SITE_URL`、`BOARD_V12_ENABLED`（默认不设置 = 关闭）；无 `DEEPSEEK_API_KEY`；无自定义域名。
 - `fantasme-academic`（旧，永久不动）：Bindings `APPLY_DB`→`fq-apply`、`EDU_DB`→`fq-edu`、`SITE_DB`→`fantasme-site-db`；变量 `ADMIN_PASSWORD`、`DEEPSEEK_API_KEY`；域名 `www`、`selftest`。
+
+### M3 对接密钥配置与 `BOARD_V12_ENABLED` 上线顺序（v1.2）
+1. **生成与配置（仅主人操作）**：在两个环境中分别用 `openssl rand -hex 32` 生成互不相同的密钥，在 Cloudflare Dashboard → Pages 项目（`fantasme-apply` 对应 production、`fantasme-apply-test` 对应 preview）的 Environment variables 中添加机密变量 `ASSISTANT_BRIDGE_SECRET`，并同步到 `fengqin-assistant` 对应环境 Secrets。AI 不生成、不打印、不入库任何明文密钥。
+2. **先保持 `BOARD_V12_ENABLED` 未设置（= 关闭，v1.1 模式）**：代码部署后，默认按 v1.1 运行，不影响旧版助理。
+3. **开启门禁**：**必须在确认 `fengqin-assistant` 已部署支持 `cancelled` 与 v1.2 字段的版本之后**，由主人先在 `fantasme-apply-test` 设置 `BOARD_V12_ENABLED=1`，使用 [tests/smoke/assistant-bridge-smoke.mjs](../tests/smoke/assistant-bridge-smoke.mjs)（`EXPECT_V12=1`）走通联调后，再在 `fantasme-apply` 生产设置 `BOARD_V12_ENABLED=1`。如需紧急回退为 v1.1，仅需在 Pages 后台删除 `BOARD_V12_ENABLED` 或改为非 `1` 值（如 `0`）。
 
 ## R2 备份方案（M2，先写方案，实施前须主人确认）
 
