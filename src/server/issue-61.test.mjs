@@ -285,3 +285,23 @@ test('#61 v1.2: short configuration rejected and backup restore cannot inject or
   const exported=await h.call('/api/admin/export',{cookie:h.sup});assert.equal(exported.data.boardTasks.length,1);
  }finally{h.db.close();}
 });
+
+test('#61: reject exact dot path segments without rejecting ordinary dotted externalIds',async()=>{
+ for(const enabled of [false,true]) {
+  const h=await fixture(enabled);try {
+   for(const externalId of ['.','..']) {
+    const rejected=await h.push(externalId);
+    assert.equal(rejected.status,400,rejected.text);
+    assert.equal(rejected.data.error,'externalId 格式无效');
+   }
+   assert.equal(h.db.raw.prepare("SELECT COUNT(*) AS n FROM records WHERE tbl='boardTasks'").get().n,0);
+   for(const externalId of ['rec.2','..x','.x','x..','...']) {
+    const created=await h.push(externalId);assert.equal(created.status,200,created.text);
+    assert.equal(created.data.created,true);assert.equal(h.row(created.data.id).externalId,externalId);
+    const retry=await partial(h,externalId,{note:'Updated dotted task'});
+    assert.equal(retry.status,200,retry.text);assert.equal(retry.data.created,false);assert.equal(retry.data.id,created.data.id);
+    if(enabled) {const cancelled=await cancel(h,externalId);assert.equal(cancelled.status,200,cancelled.text);assert.equal(cancelled.data.status,'cancelled');}
+   }
+  }finally{h.db.close();}
+ }
+});

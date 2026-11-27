@@ -102,7 +102,7 @@ async function fqBoardAction(request,env,user,id,action) {
   return D({record});
 }
 function fqAssistantExternalId(value) {
-  if(typeof value!=='string' || !/^[A-Za-z0-9._:-]{1,128}$/.test(value)) throw new I(400,'externalId 格式无效');
+  if(typeof value!=='string' || value==='.' || value==='..' || !/^[A-Za-z0-9._:-]{1,128}$/.test(value)) throw new I(400,'externalId 格式无效');
   return value;
 }
 async function fqAssistantTaskId(externalId) {
