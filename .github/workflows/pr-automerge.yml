@@ -1,0 +1,56 @@
+name: PR Auto-merge
+
+# CI 通过后，仅当满足 scripts/pr-policy.cjs 的规则才自动合并（低风险需 risk:low；代码类需 approved；
+# 工作流、恢复基线、高风险一律不自动合并）。合并后手动触发一次 main 上的测试。
+on:
+  workflow_run:
+    workflows: ['Application tests']
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: write
+  checks: read
+
+concurrency:
+  group: pr-automerge
+  cancel-in-progress: false
+
+jobs:
+  automerge:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const policy = require('./scripts/pr-policy.cjs');
+            const { owner, repo } = context.repo;
+            const run = context.payload.workflow_run;
+            for (const ref of run.pull_requests || []) {
+              const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: ref.number });
+              // 只处理本次 CI 跑的就是当前最新提交、且目标为默认分支的同仓库 PR
+              if (pr.state !== 'open' || pr.head.sha !== run.head_sha || pr.base.ref !== context.payload.repository.default_branch) continue;
+              if (pr.head.repo.full_name !== `${owner}/${repo}`) continue;
+              const files = (await github.paginate(github.rest.pulls.listFiles, { owner, repo, pull_number: pr.number, per_page: 100 })).map(f => f.filename);
+              const labels = pr.labels.map(l => l.name);
+              // mergeable_state 可能还在计算，最多再取三次
+              let state = pr.mergeable_state;
+              for (let i = 0; i < 3 && (state === 'unknown' || state == null); i++) {
+                await new Promise(r => setTimeout(r, 4000));
+                state = (await github.rest.pulls.get({ owner, repo, pull_number: pr.number })).data.mergeable_state;
+              }
+              const d = policy.decideAutoMerge({ draft: pr.draft, labels, files, ciConclusion: 'success', mergeableState: state });
+              core.info(`PR #${pr.number}: ${d.ok ? '合并' : '不合并'} — ${d.reason}`);
+              if (!d.ok) continue;
+              await github.rest.pulls.merge({ owner, repo, pull_number: pr.number, merge_method: 'merge', sha: pr.head.sha });
+              await github.rest.issues.addLabels({ owner, repo, issue_number: pr.number, labels: ['automerged'] }).catch(() => {});
+              await github.rest.issues.createComment({ owner, repo, issue_number: pr.number, body: `[Bot] 已自动合并：${d.reason}。合并后已触发 main 上的测试。` });
+              // GITHUB_TOKEN 触发的合并不会产生 push 事件，手动触发一次 main 上的测试
+              await github.rest.actions.createWorkflowDispatch({ owner, repo, workflow_id: 'test.yml', ref: context.payload.repository.default_branch }).catch(e => core.warning('触发 main 测试失败：' + e.message));
+            }

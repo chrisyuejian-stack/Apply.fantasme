@@ -25,6 +25,15 @@
 - **不在此授权内（必须等主人明确要求）**：BUG-02/03/05 等高风险后端项（需 Antigravity 验收 + Grok 红队）；任何改 `.github/workflows/` 中生产工作流、Secrets、D1 数据或表结构、域名/DNS 的变更；触发生产部署或审批。
 - 合并前核对：CI 绿、无冲突、改动范围与 PR 描述一致；合并后在 main 上复跑 `npm test`。
 
+## 自动化（减少人工传话与合并）
+
+由 `.github/workflows/pr-*.yml` 与 `preview-on-pr.yml` 驱动，规则代码在 `scripts/pr-policy.cjs`（有测试）：
+- **状态评论**：每个 PR 一条置顶评论，写明风险、CI、红队/验收/批准是否齐全、**下一步该谁做什么**。看这条即可，不必追问进度。
+- **标签**：`risk:low`（低风险，可自动合并）、`risk:high`（强制高风险）、`approved`（主人/Claude 批准）、`gate:redteam-passed`（Grok 红队通过）、`gate:accepted`（Antigravity 验收通过）、`deploy:preview`（自动部署 preview）。
+- **自动合并**：CI 通过后，**仅文档/测试/模板**且打了 `risk:low` 才自动合并；**代码类**需 `approved`；**工作流、`docs/recovery/`、`tests/standalone.test.mjs`、高风险**一律不自动合并（需主人）；草稿不合并；任何不确定都不合并。
+- **自动预览**：给 PR 打 `deploy:preview` 标签，自动部署 preview 并跑只读探针，结果评论到 PR；后续每次推送自动更新。
+- 各角色完成红队/验收后，给 PR 加对应 `gate:*` 标签（并照常评论证据）。生产部署仍需主人审批。
+
 ## 额度保护（Claude 额度最少，只做稀缺判断）
 
 - Claude 不做低风险修复，不实现高风险后端项（只出设计稿：契约、改法、回滚点）。
