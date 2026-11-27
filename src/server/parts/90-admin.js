@@ -2,7 +2,7 @@ const fqImportLockKey = '__imp:lock';
 const fqImportLeaseMs = 300000;
 function fqValidateBackup(backup) {
   if (!backup || typeof backup !== 'object' || Array.isArray(backup) || backup.format !== 'fq-admissions') throw new I(400, '不是本系统导出的备份文件');
-  const tables = we.filter(table => table !== 'boardTasks' && Object.hasOwn(backup, table));
+  const tables = we.filter(table => !['boardTasks','feeBills'].includes(table) && Object.hasOwn(backup, table));
   if (!tables.length) throw new I(400, '空备份：没有业务表数组');
   for (const table of tables) {
     if (!Array.isArray(backup[table])) throw new I(400, table + ' 必须为数组');

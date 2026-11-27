@@ -140,7 +140,7 @@ async function rt(t, e, {
   let n = [];
   i && n.push(t.DB.prepare("DELETE FROM records"));
   let o = j();
-  for (let r of we.filter(table => table !== 'boardTasks')) for (let s of e[r] || []) s.updatedAt = s.updatedAt || o, s.createdAt = s.createdAt || o, n.push(Yt(t, r, s));
+  for (let r of we.filter(table => !['boardTasks','feeBills'].includes(table))) for (let s of e[r] || []) s.updatedAt = s.updatedAt || o, s.createdAt = s.createdAt || o, n.push(Yt(t, r, s));
   for (let r = 0; r < n.length; r += 80) await t.DB.batch(n.slice(r, r + 80));
 }
 async function Jt(t, e) {

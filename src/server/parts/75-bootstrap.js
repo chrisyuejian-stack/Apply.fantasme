@@ -2,7 +2,7 @@ async function Jn(t, e) {
   let i = await de(t, e),
     n = (e.role === 'supervisor'
       ? await t.DB.prepare("SELECT tbl, data FROM records WHERE tbl NOT GLOB '__imp:*'").all()
-      : await t.DB.prepare("SELECT tbl, data FROM records WHERE (student_id IN (SELECT value FROM json_each(?))" + (ve(e) ? " OR tbl='templates'" : '') + (['advisor','supervisor'].includes(e.role) ? " OR tbl='boardTasks'" : '') + ") AND tbl NOT GLOB '__imp:*' ORDER BY rowid").bind(JSON.stringify([...i.visible])).all()).results,
+      : await t.DB.prepare("SELECT tbl, data FROM records WHERE (tbl!='feeBills' OR ?='advisor' OR (?='student' AND json_extract(data,'$.status')!='draft')) AND (student_id IN (SELECT value FROM json_each(?))" + (ve(e) ? " OR tbl='templates'" : '') + (['advisor','supervisor'].includes(e.role) ? " OR tbl='boardTasks'" : '') + ") AND tbl NOT GLOB '__imp:*' ORDER BY rowid").bind(e.role,e.role,JSON.stringify([...i.visible])).all()).results,
     o = Object.fromEntries(we.map(a => [a, []])),
     r = {};
   for (let a of n) if (a.tbl === "documents") {

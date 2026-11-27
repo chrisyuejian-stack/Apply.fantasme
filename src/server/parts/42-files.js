@@ -74,6 +74,11 @@ function fqFileWriteAccess(context, document) {
   if (!['drafting','revising'].includes(document.status || 'drafting')) throw new I(403,'文书当前不在撰写 / 修改阶段');
 }
 async function fqFiles(request, env, user, url) {
+  let fqFeeDownload=false;
+  if(url.pathname.startsWith('/api/files/')) {
+    try {const key=decodeURIComponent(url.pathname.slice('/api/files/'.length));fqFeeDownload=key.startsWith('fees/')||key.startsWith('settings/collect/');} catch {}
+  }
+  if((url.pathname==='/api/files'&&(url.searchParams.has('billId')||url.searchParams.has('purpose')))||fqFeeDownload) return fqFeeFiles(request,env,user,url);
   if (url.pathname === '/api/files' && request.method === 'POST') {
     const documentId = url.searchParams.get('documentId');
     if (!Kn.test(documentId || '')) throw new I(400,'文书编号无效');

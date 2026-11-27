@@ -103,6 +103,7 @@ async function Yn(t, e, i) {
   });
   const boardAction=n.match(/^\/board\/tasks\/([A-Za-z0-9_-]{2,80})\/(claim|release|block|done|reassign|delete)$/);
   if (boardAction && o==='POST') return fqBoardAction(t,e,s,boardAction[1],boardAction[2]);
+  if (n==='/fees'||n.startsWith('/fees/')) return fqFees(t,e,s,i);
   if (n === '/files' || n.startsWith('/files/')) return fqFiles(t,e,s,i);
   const fqAction = n.match(/^\/documents\/([A-Za-z0-9_-]{2,80})\/(revise|proxy-confirm|review)$/);
   if (fqAction && o === 'POST') return fqDocumentAction(t,e,s,fqAction[1],fqAction[2]);
