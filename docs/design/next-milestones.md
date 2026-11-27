@@ -51,12 +51,12 @@
 
 ### 数据（只加类型名，不改表结构）
 `records` 新增业务表名 **`boardTasks`**（加入 `20-permissions.js` 的 `we`），`student_id` 为 `NULL`。JSON：
-`{ id, title, note, importance: "high"|"normal"|"low", due: "YYYY-MM-DD"|null, assigneeId, status: "open"|"done", doneAt, doneBy, source: "assistant"|"manual", externalId, createdBy, createdAt, updatedAt }`
+`{ id, title, note, importance: "high"|"normal"|"low", due: "YYYY-MM-DD"|null, assigneeId, status: "open"|"blocked"|"done", blockedReason, blockedAt, doneAt, doneBy, source: "assistant", externalId, createdBy, createdAt, updatedAt }`（契约 v1.1）
 
 ### 权限（三处都要改，缺一处就会漏或泄露）
 1. **可见性 `Be`**：`boardTasks` 不走学生可见性；主管看全部，`advisor` 只看 `assigneeId === 自己`；其他角色（文书、学生、DIY）一律不可见。
 2. **bootstrap（`75-bootstrap.js`）**：非主管的 SQL 下推按 `student_id IN (...)` 过滤，`boardTasks` 的 `student_id` 为空会被整体漏掉。须在条件中加 `OR tbl='boardTasks'`（仅员工角色），再由 `Be` 按负责人过滤。
-3. **写入 `Qe`**：主管可新建、改派、删除；负责顾问只能改 `status` 与 `note`（其他字段以库中原值覆盖）；完成时服务端写 `doneAt`、`doneBy`；`source`/`externalId` 只能由对接接口写，普通接口提交时忽略。
+3. **写入 `Qe`**：**申请系统内任何角色都不能新建任务**（只经助理接口创建）；主管可改派、删除；负责顾问只能推进状态：`open→blocked`（`blockedReason` 必填 ≤500 字，写 `blockedAt`）、`open|blocked→done`（写 `doneAt`、`doneBy`），`done` 为终态，不可回退、遇阻原因不可修改；其他字段以库中原值覆盖；`source`/`externalId` 只能由对接接口写。
 
 ### 对接接口（服务端对服务端）
 - 路由前缀 `/api/integrations/assistant/`，在 `60-router.js` 中**位于 `X-FQ` 与同源校验之前**分派，**只认 HMAC 签名**，不读 Cookie；其他任何 `/api/*` 路由行为不变。
@@ -64,9 +64,9 @@
 - 未配置 `ASSISTANT_BRIDGE_SECRET` 时这些路由一律 503；签名错误 401；不返回任何学生档案数据。
 
 ### 前端（Claude）
-- 新导航「任务板」（主管、顾问可见）：按「逾期 / 今天 / 本周 / 之后 / 已完成」分组，重要性标色，一键完成，可写备注；来源为助理的显示「来自助理」。
-- 主管：查看全部、按负责人筛选、手动新建与改派。
-- 工作台增加「待办任务」计数。
+- 在现有「任务」页增加选项卡 **「主管提醒」**（主管、顾问可见；已确认的效果图见主人确认记录）：顾问端按「逾期 / 今天 / 本周 / 已完成」分组，重要性左侧色条，卡片右侧「遇阻」「完成」；遇阻弹窗原因必填，遇阻后仍可完成；已完成顾问端保留 30 天。
+- 主管端：看全部，可按顾问、状态筛选；「遇阻」置顶，选项卡角标显示遇阻数；**没有新建按钮**。
+- 导航「任务」角标与工作台计数加上「待办 + 遇阻」提醒数。
 
 ### 助理系统侧（在其仓库实施，由其协作者完成）
 按对接契约：新增「推给顾问」对话工具；在 10 分钟定时任务中拉取更新并写入记忆；保存 `ASSISTANT_BRIDGE_SECRET` 与申请系统地址。
