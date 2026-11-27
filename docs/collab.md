@@ -2,16 +2,18 @@
 
 红线见 [AGENTS.md](../AGENTS.md)。本页只管分工、交接和分支。
 
-## 分工矩阵
+## 分工矩阵（2026-11-27 起：GPT 用量不足暂停，后端由 Antigravity 承担）
 
 | 角色 | 主责 | 可写区域 | 不做 |
 |---|---|---|---|
-| **Claude** | 高风险项（BUG-02/03/05、bootstrap 裁剪）**只出设计稿**；前端小步修复（BUG-10~12）；协作文档；上线前设计审阅 | `docs/`、已认领的 `public/` 文件 | 全量性能测试、线上操作 |
-| **GPT/Codex** | `src/server/` 全部缺陷的**实现**：低风险 Bug 自行修复，高风险项按 Claude 设计稿实现；补回归断言 | 已认领的 `src/server/` 文件 | 前端重构、部署 |
-| **Antigravity** | 回归/E2E/性能验收、Preview 部署、按 BUG 编号回归并更新 status | `tests/`、`scripts/perf-bench.mjs`、`docs/testing/`、`.github/workflows/` | 改业务代码 |
-| **Grok-Ops** | 只读：生产对齐核查、平台限制实测、preview 红队、外部链路验证、上线后巡检、对抗性第二意见 | 无（只发带前缀的评论/issue） | 写仓库、写 D1、攻击生产、输出学生数据 |
+| **Claude** | 方案/设计稿/效果图、**代码审阅与合并**、协作文档与自动化、必要时的前端；高风险项的设计 | `docs/`、`src/client/`（必要时）、`.github/`（经主人合并） | 大批量实现（省额度） |
+| **Antigravity（Gemini）** | **后端实现**（`src/server/`，含 `ai.js`）与后端测试；全量回归/E2E/性能、Preview 部署；必要时前端 | `src/server/`、`tests/`、`scripts/`、`docs/testing/` | **验收自己写的代码**（见下） |
+| **Grok-Ops（Cursor）** | 只读红队/巡检/对抗性第二意见，可被 PR/issue 里 `@cursor` 唤醒 | 无（只发评论、加 `gate:redteam-passed`） | 写仓库、写 D1/R2、攻击生产 |
+| **GPT/Codex** | **暂停**（用量不足）；恢复后重新承担后端实现 | — | — |
 
-## 防重复
+**独立性规则（因 Antigravity 同时写后端）**：Antigravity 自己写的 PR，不能由它自己打 `gate:accepted`；该标签改由 **Claude 审阅 + CI 全量回归/性能基准全绿** 后由 Claude 打。高风险 PR 仍需 Grok 红队 `gate:redteam-passed` 与主人 `approved`。
+
+## 防重复（原有，保留）
 
 1. 文件认领见 `status.md`；动别人名下的文件先登记并获同意。
 2. GPT 只跑 `npm test` + 自己新增的测试；全量回归/E2E/性能只由 Antigravity 跑并写入 status。
