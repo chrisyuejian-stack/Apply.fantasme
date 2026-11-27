@@ -617,9 +617,10 @@ async function fqaiChat(env, cfg, db, user, body, emit, deps) {
   const web = !!(cfg.web && cfg.apiKey && body.web !== false);
   // 学生数据：只在服务端按当前账号权限读取，白名单字段，不含证件 / 电话 / 邮箱 / 住址
   const stu = deps ? await fqaiChatStudents(deps, user, body) : null;
+  const chatBlock = stu ? [...new Set([...stu.scope.visible].flatMap(id => fqaiStudentBlock(stu.scope.byId.get(id), idx)))] : [];
   const messages = [{ role: 'system', content: fqaiSystemPrompt(idx, web) + (stu ? fqaiChatStudentRules(stu) : '') }, ...history, { role: 'user', content: question }];
   const tools = FQAI_TOOLS.concat(web ? FQAI_WEB_TOOLS : [], stu ? FQAI_STU_TOOLS : []).map(f => ({ type: 'function', function: f }));
-  const W = web ? fqaiWebSession({ cfg, db, user, idx }, { emit, question, maxSearch: 4, maxOpen: 4 }) : null;
+  const W = web ? fqaiWebSession({ cfg, db, user, idx }, { emit, block: chatBlock, maxSearch: 4, maxOpen: 4 }) : null;
   const ctx = { env, cfg, db, user, idx, emit, verifyUsed: false, tokensIn: 0, tokensOut: 0, W, stu, deps };
   const used = []; const seen = new Set();
   let answer = '';
@@ -716,14 +717,57 @@ function fqaiSafeUrl(u) {
     return x.toString().slice(0, 2000);
   } catch (_) { return ''; }
 }
+function fqaiSchoolWordSet(idx) {
+  if (!idx) return new Set();
+  if (idx._words) return idx._words;
+  const set = new Set();
+  for (const s of idx.schools || []) {
+    for (const part of String([s.abbr, s.en, s.city_en].filter(Boolean).join(' ')).toLowerCase().match(/[a-z]{2,}/g) || []) set.add(part);
+  }
+  idx._words = set;
+  return set;
+}
+function fqaiStudentBlock(s, idx) {
+  if (!s) return [];
+  const p = s.profile || {};
+  const schoolWords = fqaiSchoolWordSet(idx);
+  const out = new Set();
+  const addFull = v => { const t = String(v || '').trim(); if (t.length >= 2) out.add(t); };
+  addFull(s.name); addFull(s.englishName); addFull(p.nameEn);
+  addFull(p.nickname); addFull(p.preferredName); addFull(p.commonName); addFull(p.alias);
+  for (const g of p.guardians || []) addFull(g?.name);
+  const zh = String(s.name || '').trim();
+  if (/^[\u4e00-\u9fa5]{2,4}$/.test(zh)) {
+    const ch = zh[0];
+    out.add(ch + '同学'); out.add('小' + ch); out.add(ch + '家长');
+  }
+  for (const full of [s.englishName, p.nameEn, p.nickname, p.preferredName]) {
+    for (const part of String(full || '').trim().split(/[\s,]+/)) {
+      const clean = part.replace(/^['"()-]+|['"()-]+$/g, '');
+      if (/^[A-Za-z]{3,}$/.test(clean) && !schoolWords.has(clean.toLowerCase())) out.add(clean);
+    }
+  }
+  return [...out];
+}
+const fqaiEscapeRe = s => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // 检索词清洗：学生个人信息不出系统
 function fqaiWebQuery(W, q) {
   let s = String(q || '').replace(/[\r\n\t]+/g, ' ');
-  for (const n of W.block || []) if (n && n.length >= 2) s = s.split(n).join(' ');
-  s = s.replace(/[\w.+-]+@[\w-]+(\.[\w-]+)+/g, ' ')
-    .replace(/(?<![\d-])\d{7,}(?![\d-])/g, ' ')
-    .replace(/\b[A-Z]{1,2}\d{7,9}\b/g, ' ')
-    .replace(/[一-龥]{1,3}同学/g, ' ')
+  // 先清邮箱、证件号与电话，再清姓名，避免 "alice@example.com" 变 "@example.com" 或 "E12345678" 剩 "E"
+  s = s.replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, ' ')
+    .replace(/\b[A-Z]{1,2}\d{7,9}\b/gi, ' ')
+    .replace(/(?:\+|00)\d{1,3}[\s-]*(?:1[3-9]\d(?:[\s-]\d{4}){2}|0?\d{2,3}[\s-]\d{7,8}|\(?\d{2,4}\)?[\s-]\d{3,4}[\s-]\d{4}|\d{7,11})\b/g, ' ')
+    .replace(/\b1[3-9]\d(?:[\s-]\d{4}){2}\b/g, ' ')
+    .replace(/\b0\d{2,3}[\s-]\d{7,8}\b/g, ' ')
+    .replace(/(?<!\d)\(?\d{3}\)?[\s-]\d{3}[\s-]\d{4}\b/g, ' ')
+    .replace(/(?<![\d-])\d{7,}(?![\d-])/g, ' ');
+  const blocks = [...new Set((W.block || []).map(x => String(x || '').trim()).filter(x => x.length >= 2))].sort((a, b) => b.length - a.length);
+  for (const n of blocks) {
+    const esc = fqaiEscapeRe(n);
+    const re = /^[\x00-\x7f]+$/.test(n) ? new RegExp('(?<![A-Za-z0-9])' + esc + "(?:'s|’s)?(?![A-Za-z0-9])", 'gi') : new RegExp(esc, 'gi');
+    s = s.replace(re, ' ');
+  }
+  s = s.replace(/(?:小)?[\u4e00-\u9fa5]{1,3}(?:同学|家长|爸爸|妈妈|父母|父亲|母亲)/g, ' ')
     .replace(/\s+/g, ' ').trim();
   return [...s].slice(0, 110).join('');
 }
@@ -789,7 +833,7 @@ async function fqaiWebSearch(W, args = {}) {
   if (c && c.status) { try { results = JSON.parse(c.text); cached = true; } catch (_) {} }
   if (!results) {
     if (W.user && W.cfg.dailyWeb) await fqaiTake(W.db, W.user, 'web', W.cfg.dailyWeb);
-    const r = await fqaiWebApi(W.cfg, 'search', Object.assign({ query: q, count: Math.min(Math.max(parseInt(args.count, 10) || 8, 1), 10) }, W.question ? { ori_question: [...W.question].slice(0, 128).join('') } : {}));
+    const r = await fqaiWebApi(W.cfg, 'search', { query: q, count: Math.min(Math.max(parseInt(args.count, 10) || 8, 1), 10) });
     if (!r.ok) { W.log.push({ type: 'search', q, n: 0, error: String(r.status) }); return { error: '搜索暂时不可用（' + r.status + '）', query: q }; }
     results = (Array.isArray(r.data?.results) ? r.data.results : []).map(x => ({ title: fqaiCut(x.title, 200), url: fqaiSafeUrl(x.url), site: x.site_name || '', date: String(x.date || '').slice(0, 10), snippet: fqaiCut(x.snippet, 300), summary: fqaiCut(x.summary || x.snippet, 800), score: x.rerank_score, authority: x.authority })).filter(x => x.url);
     await fqaiCachePut(W.db, key, 200, q, JSON.stringify(results));
@@ -1584,7 +1628,7 @@ async function fqaiWebStep(deps, run, X, body, apps, goal, emit, lim) {
   if (body.web === false || !deps.cfg.web || !apps.length) return null;
   const B = X.B, idx = deps.idx;
   emit && emit({ type: 'status', text: `正在联网核对 ${apps.map(a => fqaiSchoolLabel(idx, a)).join('、')} 官网（日期、材料、文书要求）…` });
-  const W = fqaiWebSession(deps, { emit, block: [B.student.name, B.student.englishName, ...(B.student.profile?.guardians || []).map(g => g?.name)], maxSearch: lim?.search || Math.min(6, 2 + apps.length * 2), maxOpen: lim?.open || Math.min(5, 2 + apps.length), keywords: ['deadline', 'audition', 'pre-screen', 'recording', 'interview', 'essay', 'statement', 'personal statement', 'supplemental', 'word', 'checklist', '2027'] });
+  const W = fqaiWebSession(deps, { emit, block: fqaiStudentBlock(B.student, idx), maxSearch: lim?.search || Math.min(6, 2 + apps.length * 2), maxOpen: lim?.open || Math.min(5, 2 + apps.length), keywords: ['deadline', 'audition', 'pre-screen', 'recording', 'interview', 'essay', 'statement', 'personal statement', 'supplemental', 'word', 'checklist', '2027'] });
   let web;
   try { web = await fqaiResearch(deps, run, W, Object.assign(fqaiResearchSpec(X, apps, goal), { essays: fqaiEssayBrief(B, apps, idx) })); }
   catch (e) { if (e.status === 402) web = { error: e.message, findings: [] }; else throw e; }
