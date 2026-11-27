@@ -52,6 +52,7 @@
         this.apply(await ge.call("GET", "/bootstrap"));
       },
       apply(t) {
+        this.features=t.features||{};
         for (const e of tt) "users" !== e && (this.data[e] = t.data[e] || []);
         this.data.users = t.users || [], this.stamps = {};
         for (const t of tt) for (const e of this.data[t]) e.updatedAt && (this.stamps[t + ":" + e.id] = e.updatedAt);

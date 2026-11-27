@@ -330,7 +330,7 @@
         d = Array.isArray(i) ? i : [X(t, e), ""];
       return `<span class="pill ${d[1] || ""} ${s}">${a(d[0])}</span>`;
     },
-    tt = ["users", "students", "applications", "submissions", "rounds", "tasks", "documents", "versions", "reviews", "materials", "repertoire", "recommenders", "refRequests", "activity", "templates"],
+    tt = ["users", "students", "applications", "submissions", "rounds", "tasks", "documents", "versions", "reviews", "materials", "repertoire", "recommenders", "refRequests", "activity", "templates", "boardTasks"],
     et = "fq2:",
     st = {
       data: {},
