@@ -1855,8 +1855,8 @@
       a = Bt(s).length,
       i = s.filter(t => t.dueDate && u(t.dueDate) <= 7).length,
       d = st.where("documents", s => !s.archived && (e.has(s.studentId) || s.writerId === t.id) && ue(s)).length,
-      n = i ? {
-        n: i,
+      n = i + fqReminderCount() ? {
+        n: i + fqReminderCount(),
         hot: a > 0
       } : null,
       o = d ? {
@@ -1964,7 +1964,7 @@
               href: "#/students"
             })}\n      ${Je("风险预警", k + w, k ? `其中 ${k} 条紧急` : "没有紧急事项", {
               cls: k ? "err" : w ? "warn" : ""
-            })}\n      ${Je(e ? "团队逾期任务" : "我的逾期任务", b.length, e ? "所有成员" : `共 ${c.length} 项未完成`, {
+            })}\n      ${Je(e ? "团队逾期与主管提醒" : "我的逾期与主管提醒", b.length + fqReminderCount(), `逾期 ${b.length} · 主管提醒 ${fqReminderCount()}`, {
               cls: b.length ? "err" : "",
               href: "#/tasks"
             })}\n      ${Je(e ? "待我定稿" : "待我审核文书", g.length, y.length ? `另有 ${y.length} 份学生提出修改` : "文书协作", {
@@ -2207,6 +2207,7 @@
           }(i.a, i.b || "overview");
           break;
         case "tasks":
+          if(fqReminderEligible() && fqReminderState.tab==='board') {d=fqReminderPage();break;}
           d = le() ? ls() : function () {
             const t = new Set(ce.students().map(t => t.id)),
               e = de() || ne();
@@ -2223,6 +2224,7 @@
               emptyTitle: "没有符合条件的任务"
             })}</section>`;
           }();
+          if(fqReminderEligible()) d=d.replace('<section class="panel">',fqReminderTabs()+'<section class="panel">');
           break;
         case "docs":
           d = le() ? ls() : function () {
