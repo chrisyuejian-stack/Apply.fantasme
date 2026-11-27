@@ -72,7 +72,11 @@ for(const count of [10,100,500]) test('Stage A differential: '+count+' students,
       monitor=true;loaded=0;
       const current=await api.Jn({DB:db},user);monitor=false;
       assert.equal(current.status,expected.status);
-      assert.deepEqual(await current.json(),await expected.json(),count+' '+user.role+' bootstrap');
+      const actual=await current.json(),baseline=await expected.json();
+      assert.deepEqual(actual.features,{boardV12:false});
+      // The feature advertisement is additive; all legacy business payloads remain identical.
+      baseline.features={boardV12:false};
+      assert.deepEqual(actual,baseline,count+' '+user.role+' bootstrap');
       if(user.role!=='supervisor') assert.ok(loaded<count*36+2,`${user.role} must not load every business row`);
       const data=api.fqaiD1Data(db),scope=await api.fqaiScope(data,user);
       let filterCalls=0;

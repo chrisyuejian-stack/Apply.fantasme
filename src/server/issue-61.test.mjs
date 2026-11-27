@@ -274,3 +274,14 @@ test('#61 v1.2: flag off defaults to v1.1 and rollback hides public/cancelled ta
   assert.ok(!(await h.call('/api/bootstrap',{cookie:h.sup})).data.data.boardTasks.some(x=>x.id===publicId||x.id===cancelled));
  }finally{h.db.close();}
 });
+
+test('#61 v1.2: short configuration rejected and backup restore cannot inject or erase board tasks',async()=>{
+ const h=await fixture(true);try {
+  h.env.ASSISTANT_BRIDGE_SECRET='short';assert.equal((await h.bridge('/advisors')).status,503);h.env.ASSISTANT_BRIDGE_SECRET=secret;
+  const id=(await h.push('restore-protected')).data.id,before=h.row(id);
+  const restored=await h.call('/api/admin/import',{method:'POST',cookie:h.sup,body:{format:'fq-admissions',templates:[],boardTasks:[{id:'forged-task',status:'open',source:'assistant',externalId:'forged'}]}});
+  assert.equal(restored.status,200,restored.text);assert.deepEqual(h.row(id),before);
+  assert.equal(h.db.raw.prepare("SELECT COUNT(*) AS n FROM records WHERE tbl='boardTasks'").get().n,1);
+  const exported=await h.call('/api/admin/export',{cookie:h.sup});assert.equal(exported.data.boardTasks.length,1);
+ }finally{h.db.close();}
+});
