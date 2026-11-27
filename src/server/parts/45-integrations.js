@@ -115,7 +115,7 @@ function fqAssistantText(value,max,required=false) {
 }
 async function fqAssistant(request, env, url) {
   const secret = env.ASSISTANT_BRIDGE_SECRET;
-  if (typeof secret !== 'string' || !secret) throw new I(503,'助理对接未配置');
+  if (typeof secret !== 'string' || secret.length < 32) throw new I(503,'助理对接未配置');
   const timestamp = request.headers.get('X-FQ-Timestamp') || '';
   const signature = request.headers.get('X-FQ-Signature') || '';
   if (!/^\d{1,12}$/.test(timestamp) || Math.abs(Math.floor(Date.now()/1000)-Number(timestamp)) > 300 || !/^[a-fA-F0-9]{64}$/.test(signature)) throw new I(401,'签名无效');
