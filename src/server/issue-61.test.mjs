@@ -4,8 +4,8 @@ import {createHash,createHmac} from 'node:crypto';
 import {createWorkerHarness,extractCookie} from '../../tests/regression/helpers.mjs';
 const prefix='/api/integrations/assistant';
 const secret='SyntheticBridgeSecretForTestsOnly32Bytes';
-async function fixture() {
-  const h=await createWorkerHarness({ASSISTANT_BRIDGE_SECRET:secret});
+async function fixture(v12=false) {
+  const h=await createWorkerHarness({ASSISTANT_BRIDGE_SECRET:secret,BOARD_V12_ENABLED:v12?'1':undefined});
   const setup=await h.call('/api/setup',{method:'POST',body:{setupKey:h.env.APPLY_SETUP_KEY,name:'Supervisor',username:'sup',password:'Supervisor2026',demo:false}});
   const sup=extractCookie(setup.headers);
   async function account(username,role,studentId) {
@@ -168,8 +168,109 @@ test('#61: signed invalid payloads are bounded and update feed projects only ass
    const id=(await h.push('feed')).data.id;
    const first=h.row(id);await h.push('feed',{note:'Changed note'});
    const feed=await h.bridge('/updates?since='+encodeURIComponent(first.updatedAt));assert.equal(feed.data.items.length,1);assert.equal(feed.data.items[0].note,'Changed note');
-   assert.deepEqual(Object.keys(feed.data.items[0]).sort(),['externalId','status','blockedReason','blockedAt','doneAt','doneBy','assigneeName','note','updatedAt'].sort());
+   assert.deepEqual(Object.keys(feed.data.items[0]).sort(),['externalId','status','blockedReason','blockedAt','doneAt','doneBy','assigneeName','note','updatedAt','visibility','claimedBy','claimedByName','claimedAt','cancelledAt','cancelledBy'].sort());
    h.db.raw.prepare("INSERT INTO records(tbl,id,student_id,data,updated_at) VALUES('boardTasks','manual',NULL,?,?)").run(JSON.stringify({id:'manual',source:'manual',updatedAt:'2099-01-01T00:00:00.000Z'}),'2099-01-01T00:00:00.000Z');
    assert.equal((await h.bridge('/updates?since=2000-01-01T00:00:00.000Z')).data.items.length,1);
+ }finally{h.db.close();}
+});
+const action=(h,id,what,cookie=h.advisor.cookie,body={})=>h.call('/api/board/tasks/'+id+'/'+what,{method:'POST',cookie,body});
+const partial=(h,externalId,fields={})=>h.bridge('/tasks',{externalId,...fields});
+const feed=h=>h.bridge('/updates?since=2000-01-01T00:00:00.000Z');
+const cancel=(h,externalId)=>h.bridge('/tasks/'+externalId+'/cancel',undefined,{method:'POST'});
+
+test('#61 v1.2: public creation, partial retry omission/null, ownership transitions and legacy defaults',async()=>{
+ const h=await fixture(true);try {
+  const id=(await partial(h,'public',{title:'公开'})).data.id;
+  assert.equal(h.row(id).visibility,'board');assert.equal(h.row(id).importance,'normal');
+  for(const who of [h.advisor.cookie,h.other.cookie,h.sup]) assert.equal((await h.call('/api/bootstrap',{cookie:who})).data.data.boardTasks.length,1);
+  assert.equal((await action(h,id,'done')).status,403);
+  assert.equal((await action(h,id,'claim')).status,200);
+  assert.equal((await h.call('/api/bootstrap',{cookie:h.other.cookie})).data.data.boardTasks.length,0);
+  const claimed=h.row(id);
+  await partial(h,'public',{title:'新标题'});assert.equal(h.row(id).claimedBy,'advisor');assert.equal(h.row(id).title,'新标题');
+  await partial(h,'public',{assignee:null});assert.equal(h.row(id).claimedAt,claimed.claimedAt);
+  await action(h,id,'block',h.advisor.cookie,{blockedReason:'合成原因'});
+  assert.equal((await action(h,id,'release')).status,403);
+  await partial(h,'public',{note:'更新备注'});assert.equal(h.row(id).status,'blocked');
+  await partial(h,'public',{assignee:'other'});assert.equal(h.row(id).status,'open');assert.equal(h.row(id).visibility,'assigned');assert.equal(h.row(id).blockedReason,null);assert.equal(h.row(id).claimedBy,null);
+  await partial(h,'public',{due:'2026-12-01',importance:'high'});await partial(h,'public',{note:'',due:null});
+  assert.equal(h.row(id).assigneeId,h.other.id);assert.equal(h.row(id).importance,'high');assert.equal(h.row(id).due,null);assert.equal(h.row(id).note,'');
+  await partial(h,'public',{assignee:null});assert.equal(h.row(id).assigneeId,null);assert.equal(h.row(id).visibility,'board');
+  const item=(await feed(h)).data.items[0];assert.equal(item.assigneeName,null);assert.equal(item.claimedByName,null);
+ }finally{h.db.close();}
+});
+
+test('#61 v1.2: concurrent claims have a single winner, release/reassign are CAS and identity is canonical',async()=>{
+ const h=await fixture(true);try {
+  const id=(await partial(h,'claim-race',{title:'并发'})).data.id;
+  // D1 batch is atomic; serialize only adapter batches, keeping reads/requests concurrent.
+  const batch=h.db.batch.bind(h.db);let queue=Promise.resolve();
+  h.db.batch=statements=>{const result=queue.then(()=>batch(statements));queue=result.catch(()=>{});return result;};
+  const results=await Promise.all([action(h,id,'claim'),action(h,id,'claim',h.other.cookie)]);
+  assert.deepEqual(results.map(x=>x.status).sort(),[200,409]);assert.match(results.find(x=>x.status===409).data.error,/已被.*认领/);
+  const owner=h.row(id).claimedBy==='advisor'?h.advisor:h.other;
+  assert.equal((await action(h,id,'block',owner.cookie,{blockedReason:'原因',claimedBy:'forged'})).status,200);
+  const item=(await feed(h)).data.items[0];assert.equal(item.claimedBy,h.row(id).claimedBy);assert.equal(item.assigneeName,item.claimedByName);assert.ok(item.claimedAt);
+  assert.equal((await action(h,id,'release',owner.cookie)).status,403);
+  assert.equal((await action(h,id,'release',h.sup)).status,200);assert.equal(h.row(id).blockedReason,null);assert.equal(h.row(id).status,'open');
+  assert.equal((await action(h,id,'reassign',h.sup,{assigneeId:h.advisor.id})).status,200);
+  assert.equal((await action(h,id,'done',h.advisor.cookie,{doneBy:'forged'})).status,200);assert.equal(h.row(id).doneBy,'advisor');
+  assert.equal((await action(h,id,'reassign',h.sup,{assigneeId:h.other.id})).status,409);
+  assert.equal((await action(h,id,'delete',h.sup)).status,409);
+  await partial(h,'claim-race',{assignee:'other'});assert.equal(h.row(id).assigneeId,h.advisor.id);
+ }finally{h.db.close();}
+});
+
+test('#61 v1.2: generic writes denied, browser gates and all non-advisor roles denied dedicated actions',async()=>{
+ const h=await fixture(true);try {
+  const id=(await partial(h,'gates',{title:'公开'})).data.id;
+  for(const cookie of [h.sup,h.advisor.cookie,h.other.cookie]) {
+   assert.equal((await h.put(h.row(id),{status:'done',claimedBy:'forged'},cookie)).status,403);
+   assert.equal((await h.call('/api/t/boardTasks/'+id,{method:'DELETE',cookie})).status,403);
+  }
+  for(const who of [h.writer.cookie,h.student.cookie]) {
+   assert.equal((await action(h,id,'claim',who)).status,403);
+   assert.equal((await h.call('/api/bootstrap',{cookie:who})).data.data.boardTasks.length,0);
+  }
+  assert.equal((await action(h,id,'claim','')).status,401);
+  assert.equal((await h.call('/api/board/tasks/'+id+'/claim',{method:'POST',cookie:h.advisor.cookie,body:{},headers:{Origin:'https://evil.test'}})).status,403);
+  assert.equal((await h.call('/api/board/tasks/'+id+'/claim',{method:'POST',cookie:h.advisor.cookie,body:{},headers:{'X-FQ':null}})).status,403);
+ }finally{h.db.close();}
+});
+
+test('#61 v1.2: cancel is immutable/idempotent, terminal ids cannot be reused and cancelled tasks disappear',async()=>{
+ const h=await fixture(true);try {
+  const id=(await partial(h,'cancel.test-1:ok',{title:'撤回'})).data.id;
+  assert.equal((await cancel(h,'missing')).status,404);
+  assert.equal((await cancel(h,'cancel.test-1:ok')).status,200);const row=h.row(id);
+  assert.equal((await cancel(h,'cancel.test-1:ok')).status,200);assert.equal(h.row(id).updatedAt,row.updatedAt);
+  assert.equal(h.row(id).cancelledBy,'assistant');
+  const retry=await partial(h,'cancel.test-1:ok',{title:'不能复活',assignee:'other'});assert.equal(retry.data.status,'cancelled');assert.equal(retry.data.created,false);assert.deepEqual(h.row(id),row);
+  assert.equal((await h.call('/api/bootstrap',{cookie:h.sup})).data.data.boardTasks.length,0);
+  assert.equal((await feed(h)).data.items[0].cancelledBy,'assistant');
+  const second=(await h.push('sup-delete')).data.id;await action(h,second,'block',h.advisor.cookie,{blockedReason:'遇阻'});
+  assert.equal((await action(h,second,'delete',h.sup)).status,200);assert.equal(h.row(second).cancelledBy,'supervisor');
+  const third=(await h.push('completed')).data.id;await action(h,third,'done');assert.equal((await cancel(h,'completed')).status,409);
+  for(const externalId of ['', '非法', 'a/b','a%20b','a'.repeat(129)]) assert.equal((await partial(h,externalId,{title:'非法'})).status,400);
+  assert.equal((await cancel(h,'bad%20id')).status,400);
+  assert.equal((await h.bridge('/tasks/completed/cancel',{}, {method:'POST'})).status,400);
+ }finally{h.db.close();}
+});
+
+test('#61 v1.2: flag off defaults to v1.1 and rollback hides public/cancelled tasks',async()=>{
+ const h=await fixture();try {
+  for(const assignee of [null,undefined]) {const input={title:'关闭'};if(assignee===null) input.assignee=null;assert.equal((await partial(h,'off',input)).status,400);}
+  const id=(await h.push('off-assigned')).data.id;assert.equal((await action(h,id,'claim')).status,404);assert.equal((await action(h,id,'release')).status,404);assert.equal((await cancel(h,'off-assigned')).status,404);
+  assert.equal((await action(h,id,'done')).status,200);
+  const old=h.row(id);delete old.visibility;delete old.claimedBy;delete old.claimedAt;
+  h.db.raw.prepare("UPDATE records SET data=? WHERE tbl='boardTasks' AND id=?").run(JSON.stringify(old),id);
+  assert.equal((await feed(h)).data.items[0].visibility,'assigned');
+  h.env.BOARD_V12_ENABLED='1';
+  const publicId=(await partial(h,'rollback-public',{title:'公开'})).data.id;
+  const cancelled=(await h.push('rollback-cancelled')).data.id;await action(h,cancelled,'delete',h.sup);
+  h.env.BOARD_V12_ENABLED='0';
+  assert.equal((await h.call('/api/bootstrap',{cookie:h.sup})).data.features.boardV12,false);
+  assert.ok(!(await feed(h)).data.items.some(x=>x.status==='cancelled'||x.externalId==='rollback-public'));
+  assert.ok(!(await h.call('/api/bootstrap',{cookie:h.sup})).data.data.boardTasks.some(x=>x.id===publicId||x.id===cancelled));
  }finally{h.db.close();}
 });

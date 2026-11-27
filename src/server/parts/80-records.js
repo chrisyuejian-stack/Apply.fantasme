@@ -10,6 +10,7 @@ async function $n(t, e, i, n, o, r) {
     });
     let l = await Qe(s, n, "delete", a, null, d);
     if (!l.ok) throw new I(403, l.error);
+    if (n === 'boardTasks') return fqBoardAction(t,e,i,o,'delete');
     if (n === 'students') return Vn(e, i, o);
     return await e.DB.prepare("DELETE FROM records WHERE tbl = ? AND id = ?").bind(n, o).run(), await N(e, i.id, "delete", n, o), D({
       ok: !0
