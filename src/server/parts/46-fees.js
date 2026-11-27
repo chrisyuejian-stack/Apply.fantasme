@@ -82,6 +82,7 @@ async function fqFees(request,env,user,url) {
   const input=await X(request);
   if(!input||typeof input!=='object'||Array.isArray(input)) throw new I(400,'费用单格式无效');
   const context=await de(env,user),creating=tail==='';
+  if(creating&&(typeof input.studentId!=='string'||!Kn.test(input.studentId))) throw new I(400,'学生编号无效');
   const original=creating?null:await env.DB.prepare("SELECT data FROM records WHERE tbl='feeBills' AND id=?").bind(match[1]).first();
   if(!creating&&!original) throw new I(404,'费用单不存在');
   const bill=creating?{id:'fee-'+crypto.randomUUID(),studentId:input.studentId,title:'',items:[],totalFen:0,status:'draft',dueDate:null,studentNote:'',attachments:[],paymentProof:null,disburseProof:null,sentAt:null,claimedAt:null,confirmedAt:null,confirmedBy:null,disbursedAt:null,disbursedBy:null,cancelledAt:null,lastReject:null,history:[],createdBy:user.id,createdAt:j()}:JSON.parse(original.data);
