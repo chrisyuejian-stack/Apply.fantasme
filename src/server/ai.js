@@ -451,7 +451,7 @@ function fqaiKeywords(r, question) {
 }
 async function fqaiVerify(env, cfg, db, idx, id, question, emit) {
   const r = idx.recById.get(String(id || ''));
-  if (!r) throw new FqaiError(404, '库内没有这个条目 ID：' + id);
+  if (!r) throw new FqaiError(404, '库内没有这个条目');
   const urls = [...new Set((r.src || []).filter(u => /^https?:\/\//i.test(u)))].slice(0, 4);
   if (!urls.length && !(cfg.web && cfg.apiKey)) throw new FqaiError(400, '该条目没有登记官网来源链接，无法联网核实');
   if (urls.length) emit && emit({ type: 'status', text: `正在读取 ${urls.length} 个官网来源页面…` });
@@ -870,25 +870,25 @@ function fqaiProtectedRanges(str, zhTerms) {
   }
   return ranges;
 }
-function fqaiReplaceBlocks(str, blockList, idx) {
+function fqaiReplaceBlocks(str, blockList, idx, repl = ' ') {
   let s = str;
   const zhTerms = fqaiZhDomainTerms(idx);
   const blocks = [...new Set((blockList || []).map(x => String(x || '').trim()).filter(x => x.length >= 2))].sort((a, b) => b.length - a.length);
   for (const n of blocks) {
     if (/^[\x00-\x7f]+$/.test(n)) {
       const re = new RegExp('(?<![A-Za-z0-9])' + fqaiEscapeRe(n) + "(?:'s|’s)?(?![A-Za-z0-9])", 'gi');
-      s = s.replace(re, ' ');
+      s = s.replace(re, repl);
     } else if (/^[\u4e00-\u9fa5]{2,}$/.test(n)) {
       const ranges = fqaiProtectedRanges(s, zhTerms);
       const re = fqaiZhBlockRe(n);
       s = s.replace(re, (m, offset) => {
         const end = offset + m.length;
         const inProtected = ranges.some(([rs, reIdx, term]) => offset >= rs && end <= reIdx && term !== n);
-        return inProtected ? m : ' ';
+        return inProtected ? m : repl;
       });
     } else {
       const re = new RegExp(fqaiEscapeRe(n), 'gi');
-      s = s.replace(re, ' ');
+      s = s.replace(re, repl);
     }
   }
   return s;
@@ -910,22 +910,22 @@ function fqaiWebQuery(W, q) {
   return [...s].slice(0, 110).join('');
 }
 function fqaiScrubText(text, block = []) {
-  let s = String(text || '');
-  if (!s) return '';
+  if (!String(text || '')) return '';
+  let s = fqaiNormalizePiiText(text);
   s = s.replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, '[邮箱已隐藏]')
     .replace(/\b[A-Z]{1,2}\d{7,9}\b/gi, '[证件号已隐藏]')
-    .replace(/(?:\+|00)\d{1,3}[\s-]*(?:1[3-9]\d(?:[\s-]\d{4}){2}|0?\d{2,3}[\s-]\d{7,8}|\(?\d{2,4}\)?[\s-]\d{3,4}[\s-]\d{4}|\d{7,11})\b/g, '[电话已隐藏]')
-    .replace(/\b1[3-9]\d(?:[\s-]\d{4}){2}\b/g, '[电话已隐藏]')
-    .replace(/\b0\d{2,3}[\s-]\d{7,8}\b/g, '[电话已隐藏]')
-    .replace(/(?<!\d)\(?\d{3}\)?[\s-]\d{3}[\s-]\d{4}\b/g, '[电话已隐藏]')
-    .replace(/(?<![\d-])\d{11,18}[0-9Xx]?(?![\d-])/g, '[编号已隐藏]');
-  const blocks = [...new Set((block || []).map(x => String(x || '').trim()).filter(x => x.length >= 2))].sort((a, b) => b.length - a.length);
-  for (const n of blocks) {
-    const esc = fqaiEscapeRe(n);
-    const re = /^[\x00-\x7f]+$/.test(n) ? new RegExp('(?<![A-Za-z0-9])' + esc + "(?:'s|’s)?(?![A-Za-z0-9])", 'gi') : new RegExp(esc, 'gi');
-    s = s.replace(re, '[已隐藏]');
-  }
-  return s;
+    .replace(/(?<![\d-])\d{15,18}[0-9Xx]?(?![\d-])/g, '[证件号已隐藏]');
+  const kept = [];
+  s = s.replace(/\b(?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2}\b|\b(?:19|20)\d{2}(?:\s*[-–—/]\s*|\s+)(?:19|20)\d{2}\b/g, m => {
+    const tok = `\uE000D${kept.length}\uE001`;
+    kept.push(m);
+    return tok;
+  });
+  s = s
+    .replace(/(?:\+|00)\d{1,3}[\s.\-–—()]*\d(?:[\s.\-–—()]*\d){5,14}/g, '[电话已隐藏]')
+    .replace(/(?<!\d)\d(?:[\s.\-–—()]*\d){6,14}(?!\d)/g, m => m.replace(/\D/g, '').length >= 7 ? '[电话已隐藏]' : m);
+  s = s.replace(/\uE000D(\d+)\uE001/g, (_, i) => kept[Number(i)]);
+  return fqaiReplaceBlocks(s, block, null, '[已隐藏]');
 }
 const fqaiMdPlain = t => String(t || '').replace(/!\[[^\]]*\]\([^)]*\)/g, ' ').replace(/\[([^\]]*)\]\((?:[^)(]|\([^)]*\))*\)/g, '$1').replace(/<[^>]+>/g, ' ').replace(/(^|\n)\s{0,3}[#>]+\s*/g, '$1').replace(/[*_`~|]{1,}/g, ' ').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
 
@@ -2322,21 +2322,25 @@ async function fqaiDispatch(path, method, body, deps) {
   }
   if (!cfg.apiKey) throw new FqaiError(503, 'AI 助手尚未配置：请在 Cloudflare 项目设置中添加 DEEPSEEK_API_KEY');
   if (path === '/api/ai/chat') return { stream: emit => fqaiChat(deps.env, run, db, user, body, emit, deps) };
-  if (path === '/api/ai/verify') return { stream: async emit => {
-    const t0 = Date.now(), qRaw = String(body.question || '').slice(0, 500);
-    const qLog = body.id + (qRaw ? ' ' + await fqaiDigest(qRaw) : '');
-    try {
-      await fqaiTake(db, user, 'verify', cfg.dailyVerify);
-      await fqaiTakePro(db, user, run);
-      const idx = await deps.loadIdx();
-      const rep = await fqaiVerify(deps.env, run, db, idx, body.id, qRaw, emit);
-      await fqaiLog(db, { user: user.id, kind: 'verify', question: qLog, tokensIn: rep.usage?.prompt_tokens, tokensOut: rep.usage?.completion_tokens, ms: Date.now() - t0, ok: true });
-      await emit({ type: 'verify', report: Object.assign({}, rep, { usage: undefined }) });
-    } catch (e) {
-      await fqaiLog(db, { user: user.id, kind: 'verify', question: qLog, ms: Date.now() - t0, ok: false, detail: e.message });
-      throw e;
-    }
-  } };
+  if (path === '/api/ai/verify') {
+    const recId = String(body.id || '').trim();
+    if (!/^[A-Za-z0-9_.:-]{2,120}$/.test(recId)) throw new FqaiError(400, '条目 ID 格式不对');
+    return { stream: async emit => {
+      const t0 = Date.now(), qRaw = String(body.question || '').slice(0, 500);
+      const qLog = recId + (qRaw ? ' ' + await fqaiDigest(qRaw) : '');
+      try {
+        await fqaiTake(db, user, 'verify', cfg.dailyVerify);
+        await fqaiTakePro(db, user, run);
+        const idx = await deps.loadIdx();
+        const rep = await fqaiVerify(deps.env, run, db, idx, recId, qRaw, emit);
+        await fqaiLog(db, { user: user.id, kind: 'verify', question: qLog, tokensIn: rep.usage?.prompt_tokens, tokensOut: rep.usage?.completion_tokens, ms: Date.now() - t0, ok: true });
+        await emit({ type: 'verify', report: Object.assign({}, rep, { usage: undefined }) });
+      } catch (e) {
+        await fqaiLog(db, { user: user.id, kind: 'verify', question: qLog, ms: Date.now() - t0, ok: false, detail: e.status ? e.message : '核实失败' });
+        throw e;
+      }
+    } };
+  }
   throw new FqaiError(404, '接口不存在');
 }
 

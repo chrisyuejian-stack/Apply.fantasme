@@ -183,3 +183,76 @@ test('#86 P2+P3+P5: context minimization, staff/guardian exclusion, log digest, 
     h.db.close();
   }
 });
+
+test('#96 (#93 red-team probes): verify validates id charset (400), avoids raw detail echo, and paste uses NFKC/spaced scrubbing', async () => {
+  const h = await createWorkerHarness({ DEEPSEEK_API_KEY: 'synthetic-offline-hook-key' });
+  const prevModel = globalThis.__fqaiModelHook;
+  try {
+    const setup = await h.call('/api/setup', {
+      method: 'POST',
+      body: { setupKey: h.env.APPLY_SETUP_KEY, name: '主管', username: 'sup', password: 'Supervisor2026', demo: false },
+    });
+    assert.equal(setup.status, 200);
+    const sup = extractCookie(setup.headers);
+
+    const head = {
+      exportedAt: '2026-11-27',
+      taxonomy: { majors: [{ id: 'violin', zh: '小提琴' }], cats: [{ id: 'audition', zh: '考试' }], levels: [{ id: 'UG', zh: '本科' }], stages: [] },
+      schools: [{ id: 'jhu', abbr: 'Peabody', zh: '皮博迪音乐学院', en: 'Peabody Institute', offers: { UG: ['violin'] }, deadlines: [] }],
+    };
+    h.db.raw.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)').run('reqdb:head', JSON.stringify(head));
+    h.db.raw.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)').run('reqdb:school:jhu', JSON.stringify([]));
+
+    // 1) Invalid verify id containing spaces / phone text -> 400 BEFORE stream & zero fq_ai_log rows
+    const badVerify = await h.call('/api/ai/verify', {
+      method: 'POST',
+      cookie: sup,
+      body: { id: 'secret id 13800001111 <tag>', question: '机密原文' },
+    });
+    assert.equal(badVerify.status, 400);
+    assert.equal(h.db.raw.prepare("SELECT COUNT(*) n FROM fq_ai_log WHERE kind = 'verify'").get().n, 0);
+
+    // 2) Valid-charset missing verify id -> error & log detail omit raw id echo and digest raw question
+    const missVerify = await h.call('/api/ai/verify', {
+      method: 'POST',
+      cookie: sup,
+      body: { id: 'jhu-missing-999', question: '学生敏感原文 E99887766' },
+    });
+    assert.equal(missVerify.status, 200);
+    assert.doesNotMatch(missVerify.text, /库内没有这个条目 ID：/);
+    assert.match(missVerify.text, /库内没有这个条目/);
+    const vLogs = h.db.raw.prepare("SELECT question, detail FROM fq_ai_log WHERE kind = 'verify'").all();
+    assert.equal(vLogs.length, 1);
+    assert.match(vLogs[0].question, /^jhu-missing-999 len=\d+ sha256=[a-f0-9]{16}$/);
+    assert.doesNotMatch(vLogs[0].question + ' ' + vLogs[0].detail, /E99887766|学生敏感原文|jhu-missing-999.*detail/i);
+    assert.equal(vLogs[0].detail, '库内没有这个条目');
+
+    // 3) paste text passes synced fqaiScrubText (NFKC, fullwidth @, spaced/dot phones, split CJK)
+    assert.equal((await h.call('/api/t/students/stu-p3-rt', {
+      method: 'PUT',
+      cookie: sup,
+      body: { id: 'stu-p3-rt', name: '林测试', status: 'active', level: 'UG', majorId: 'violin', season: 'Fall 2027' },
+    })).status, 200);
+
+    let capturedPaste = '';
+    globalThis.__fqaiModelHook = async (_cfg, body) => {
+      capturedPaste = body.messages?.[1]?.content || '';
+      return { choices: [{ message: { role: 'assistant', content: JSON.stringify({ summary: 'ok', cards: [], manual: [] }) } }] };
+    };
+    const pasteRes = await h.call('/api/ai/run', {
+      method: 'POST',
+      cookie: sup,
+      body: {
+        action: 'paste',
+        studentId: 'stu-p3-rt',
+        text: '请通知 林 测试：1 3 8 0 0 0 0 1 1 1 1 ＋８６　１３８－００００－１１１１ 138.0000.1111 secret＠school.edu，截止 2026-12-01',
+      },
+    });
+    assert.equal(pasteRes.status, 200);
+    assert.doesNotMatch(capturedPaste, /1 3 8|138|0000|1111|secret|school\.edu|林 测试/i);
+    assert.match(capturedPaste, /2026-12-01/);
+  } finally {
+    globalThis.__fqaiModelHook = prevModel;
+    h.db.close();
+  }
+});
