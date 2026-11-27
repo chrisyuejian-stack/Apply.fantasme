@@ -24,6 +24,7 @@ async function fixture(storage=true) {
  const row=id=>JSON.parse(h.db.raw.prepare("SELECT data FROM records WHERE tbl='feeBills' AND id=?").get(id).data);
  const boot=cookie=>h.call('/api/bootstrap',{cookie});
  const upload=(billId,purpose,cookie=advisor.cookie,bytes=Buffer.from([137,80,78,71,13,10,26,10]),headers={})=>h.call('/api/files?'+new URLSearchParams({...(billId?{billId}:{}),purpose}),{method:'POST',cookie,rawBody:bytes,headers:{'Content-Type':'image/png','X-File-Name':'synthetic.png',...headers}});
+ const batch=h.db.batch.bind(h.db);let queue=Promise.resolve();h.db.batch=statements=>{const result=queue.then(()=>batch(statements));queue=result.catch(()=>{});return result;};
  return {...h,files,dir,sup,advisor,other,writer,student,foreign,create,act,edit,row,boot,upload,cleanup:async()=>{h.db.close();await rm(dir,{recursive:true,force:true});}};
 }
 
@@ -98,16 +99,12 @@ test('#80: concurrent confirm/reject and advisor reassignment cannot lose update
   const id=(await h.create()).data.record.id;await h.act(id,'send');await h.act(id,'claim',h.student.cookie);
   const results=await Promise.all([h.act(id,'confirm'),h.act(id,'reject',h.advisor.cookie,{reason:'not found'})]);assert.deepEqual(results.map(x=>x.status).sort(),[200,409]);
   assert.equal(h.row(id).history.length,4);
+  assert.equal(h.db.raw.prepare("SELECT COUNT(*) n FROM audit WHERE tbl='feeBills' AND rec_id=?").get(id).n,4);
   const fresh=(await h.create()).data.record;
-  const prepare=h.db.prepare.bind(h.db);let intercept=true;
-  h.db.prepare=query=>{
-   const stmt=prepare(query);
-   if(query.startsWith('UPDATE records SET data=?,student_id=?,updated_at=?')) {
-    const run=stmt.run.bind(stmt);stmt.run=async()=>{
-     if(intercept){intercept=false;h.db.raw.prepare("UPDATE records SET data=json_set(data,'$.advisorId',?) WHERE tbl='students' AND id='student-one'").run(h.other.id);}
-     return run();
-    };
-   }return stmt;
+  const batch=h.db.batch.bind(h.db);let intercept=true;
+  h.db.batch=async statements=>{
+   if(intercept&&statements[0].query.startsWith('UPDATE records SET data=?,student_id=?,updated_at=?')){intercept=false;h.db.raw.prepare("UPDATE records SET data=json_set(data,'$.advisorId',?) WHERE tbl='students' AND id='student-one'").run(h.other.id);}
+   return batch(statements);
   };
   assert.equal((await h.edit(fresh,{title:'Stale advisor'})).status,409);assert.equal(h.row(fresh.id).title,fresh.title);
  }finally{await h.cleanup();}
@@ -158,4 +155,16 @@ test('#80: collect settings owner-only, QR access expires after claim, missing s
   const original=h.row(bill.id);assert.equal((await h.call('/api/admin/import',{method:'POST',cookie:h.sup,body:{format:'fq-admissions',templates:[],feeBills:[]}})).status,200);assert.deepEqual(h.row(bill.id),original);
  }finally{await h.cleanup();}
  const missing=await fixture(false);try{const bill=(await missing.create()).data.record;assert.equal((await missing.upload(bill.id,'attachment')).status,503);}finally{await missing.cleanup();}
+});
+
+test('#80: financial state and audit commit together; audit failure leaves the bill unchanged',async()=>{
+ const h=await fixture();try{
+  const bill=(await h.create()).data.record;
+  h.db.raw.exec("CREATE TRIGGER deny_fee_audit BEFORE INSERT ON audit WHEN NEW.action LIKE 'fee-%' BEGIN SELECT RAISE(ABORT,'synthetic audit unavailable'); END");
+  assert.equal((await h.act(bill.id,'send')).status,500);
+  assert.deepEqual(h.row(bill.id),bill);
+  assert.equal((await h.call('/api/fees/collect',{method:'PUT',cookie:h.sup,body:{payeeName:'Atomic test'}})).status,500);
+  assert.equal(h.db.raw.prepare("SELECT value FROM meta WHERE key='fee:collect'").get(),undefined);
+  assert.equal(h.db.raw.prepare("SELECT COUNT(*) n FROM audit WHERE rec_id=? AND action='fee-send'").get(bill.id).n,0);
+ }finally{await h.cleanup();}
 });

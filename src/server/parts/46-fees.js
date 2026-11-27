@@ -24,7 +24,10 @@ async function fqFeeSave(env,original,bill,studentData) {
   const stmt=original
     ? env.DB.prepare("UPDATE records SET data=?,student_id=?,updated_at=? WHERE tbl='feeBills' AND id=? AND data=? AND "+guard).bind(data,bill.studentId,bill.updatedAt,bill.id,original,bill.studentId,studentData)
     : env.DB.prepare("INSERT INTO records(tbl,id,student_id,data,updated_at) SELECT 'feeBills',?,?,?,? WHERE "+guard+" AND NOT EXISTS(SELECT 1 FROM records WHERE tbl='feeBills' AND json_extract(data,'$.refCode')=? AND json_extract(data,'$.status') NOT IN ('disbursed','cancelled')) ON CONFLICT(tbl,id) DO NOTHING").bind(bill.id,bill.studentId,data,bill.updatedAt,bill.studentId,studentData,bill.refCode);
-  if(!(await stmt.run()).meta.changes) throw new I(409,'费用单或学生负责人已变化，请刷新后重试');
+  const event=bill.history.at(-1),action='fee-'+event.action,detail=bill.refCode+' '+bill.updatedAt;
+  const audit=env.DB.prepare("INSERT INTO audit(at,user_id,action,tbl,rec_id,detail) SELECT ?,?,?,'feeBills',?,? WHERE EXISTS(SELECT 1 FROM records WHERE tbl='feeBills' AND id=? AND data=?) AND NOT EXISTS(SELECT 1 FROM audit WHERE tbl='feeBills' AND rec_id=? AND action=? AND detail=?)").bind(j(),event.by,action,bill.id,detail,bill.id,data,bill.id,action,detail);
+  const results=await env.DB.batch([stmt,audit]);
+  if(!results[0].meta.changes) throw new I(409,'费用单或学生负责人已变化，请刷新后重试');
 }
 async function fqFeeEdit(env,bill,input) {
   if(Object.hasOwn(input,'title')) bill.title=fqFeeText(input.title,80,true);
@@ -65,8 +68,10 @@ async function fqFeeCollect(env,user,request) {
   if(user.role!=='supervisor') throw new I(403,'只有主管可以修改收款码');
   const input=await X(request),collect={payeeName:fqFeeText(input.payeeName,80,true),wechat:null,alipay:null};
   for(const channel of ['wechat','alipay']) if(input[channel]!=null) collect[channel]=await fqFeeReference(env,input[channel].key,null,'collect');
-  await env.DB.prepare("INSERT INTO meta(key,value) VALUES('fee:collect',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(JSON.stringify(collect)).run();
-  await N(env,user.id,'fee-collect-settings');return D({collect});
+  await env.DB.batch([
+    env.DB.prepare("INSERT INTO meta(key,value) VALUES('fee:collect',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(JSON.stringify(collect)),
+    env.DB.prepare("INSERT INTO audit(at,user_id,action,tbl,rec_id,detail) VALUES(?,?,'fee-collect-settings','meta','fee:collect','')").bind(j(),user.id)
+  ]);return D({collect});
 }
 async function fqFees(request,env,user,url) {
   const tail=url.pathname.slice('/api/fees'.length);
@@ -122,6 +127,5 @@ async function fqFees(request,env,user,url) {
       try{await fqFeeSave(env,null,bill,student.data);break;}catch(error){if(error instanceof I&&error.status===409&&attempt<15)continue;throw error;}
     }
   } else await fqFeeSave(env,original.data,bill,student.data);
-  await N(env,user.id,'fee-'+action,'feeBills',bill.id,bill.refCode);
   return D({record:bill});
 }
