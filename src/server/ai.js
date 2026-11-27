@@ -23,7 +23,11 @@ function fqaiConfig(env) {
     // 删除任务的建议规则：strict（默认：只建议删除 AI 新建或确认重复、尚未开始的任务，其余改为“不适用”）/ any / off
     deletePolicy: ['strict', 'any', 'off'].includes(String(env.AI_DELETE || '').toLowerCase()) ? String(env.AI_DELETE).toLowerCase() : 'strict',
     logRetentionDays: num(env.AI_LOG_RETENTION_DAYS, 90),
-    cacheRetentionDays: num(env.AI_CACHE_RETENTION_DAYS, 7)
+    cacheRetentionDays: num(env.AI_CACHE_RETENTION_DAYS, 7),
+    dailyGlobal: num(env.AI_DAILY_GLOBAL, 0),
+    maxChatRounds: Math.min(Math.max(num(env.AI_MAX_CHAT_ROUNDS, 6), 1), 12),
+    maxRunModelCalls: Math.min(Math.max(num(env.AI_MAX_RUN_CALLS, 8), 1), 20),
+    maxModelChars: Math.min(Math.max(num(env.AI_MAX_MODEL_CHARS, 120000), 4000), 400000)
   };
 }
 // 顾问在界面上选“Pro”时，本次请求的对话与核实都改用 Pro 模型，并计入 Pro 每日用量
@@ -31,7 +35,6 @@ function fqaiPick(cfg, mode) {
   if (mode === 'pro') return Object.assign({}, cfg, { tier: 'pro', model: cfg.proModel, verifyModel: cfg.proModel });
   return Object.assign({}, cfg, { tier: 'flash' });
 }
-async function fqaiTakePro(db, user, run) { if (run.tier === 'pro') await fqaiTake(db, user, 'pro', run.dailyPro); }
 
 class FqaiError extends Error { constructor(status, msg) { super(msg); this.status = status; } }
 
@@ -89,13 +92,44 @@ async function fqaiTables(db) {
 }
 const fqaiDay = () => new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10); // 北京时间
 async function fqaiUsage(db, user, kind) {
-  const r = await db.prepare('SELECT n FROM fq_ai_usage WHERE day = ? AND user_id = ? AND kind = ?').bind(fqaiDay(), user.id, kind).first();
+  const uid = typeof user === 'string' ? user : user.id;
+  const r = await db.prepare('SELECT n FROM fq_ai_usage WHERE day = ? AND user_id = ? AND kind = ?').bind(fqaiDay(), uid, kind).first();
   return r ? r.n : 0;
 }
+function fqaiQuotaMsg(kind, limit) {
+  return {
+    verify: `今日联网核实已达上限（${limit} 次）`,
+    web: `今日联网检索已达上限（${limit} 次）`,
+    essay: `今日文书助手已达上限（${limit} 次）`,
+    pro: `今日 Pro 模型已达上限（${limit} 次），请切回“自动 · Flash”`,
+    global: `今日团队 AI 总调用已达上限（${limit} 次），请明日再试或联系主管调整`
+  }[kind] || `今日 AI 使用已达上限（${limit} 次）`;
+}
 async function fqaiTake(db, user, kind, limit) {
-  if (limit === 0) return; // 0 = 不限
-  if ((await fqaiUsage(db, user, kind)) >= limit) throw new FqaiError(429, { verify: `今日联网核实已达上限（${limit} 次）`, web: `今日联网检索已达上限（${limit} 次）`, essay: `今日文书助手已达上限（${limit} 次）`, pro: `今日 Pro 模型已达上限（${limit} 次），请切回“自动 · Flash”` }[kind] || `今日 AI 使用已达上限（${limit} 次）`);
-  await db.prepare('INSERT INTO fq_ai_usage (day, user_id, kind, n) VALUES (?,?,?,1) ON CONFLICT(day, user_id, kind) DO UPDATE SET n = n + 1').bind(fqaiDay(), user.id, kind).run();
+  if (!limit || limit <= 0) return false; // 0 = 不限
+  const uid = typeof user === 'string' ? user : user.id;
+  const r = await db.prepare(
+    'INSERT INTO fq_ai_usage (day, user_id, kind, n) VALUES (?,?,?,1) ON CONFLICT(day, user_id, kind) DO UPDATE SET n = n + 1 WHERE fq_ai_usage.n < ?'
+  ).bind(fqaiDay(), uid, kind, limit).run();
+  if (!r?.meta?.changes) throw new FqaiError(429, fqaiQuotaMsg(kind, limit));
+  return true;
+}
+async function fqaiUntake(db, user, kind) {
+  const uid = typeof user === 'string' ? user : user.id;
+  await db.prepare('UPDATE fq_ai_usage SET n = MAX(0, n - 1) WHERE day = ? AND user_id = ? AND kind = ?').bind(fqaiDay(), uid, kind).run();
+}
+async function fqaiTakeQuota(db, user, kind, limit, run) {
+  const tookKind = await fqaiTake(db, user, kind, limit);
+  let tookPro = false;
+  try {
+    if (run && run.tier === 'pro') tookPro = await fqaiTake(db, user, 'pro', run.dailyPro);
+    const gLim = run?.dailyGlobal || 0;
+    if (gLim > 0) await fqaiTake(db, '__global__', 'global', gLim);
+  } catch (e) {
+    if (tookPro) await fqaiUntake(db, user, 'pro').catch(() => {});
+    if (tookKind) await fqaiUntake(db, user, kind).catch(() => {});
+    throw e;
+  }
 }
 async function fqaiDigest(text) {
   const s = String(text || '');
@@ -516,6 +550,9 @@ items 不超过 12 条，details 不超过 6 条。`;
 
 /* ---------- DeepSeek 调用（OpenAI 兼容格式） ---------- */
 async function fqaiModel(cfg, body) {
+  const maxChars = cfg?.maxModelChars || 120000;
+  const msgLen = JSON.stringify(body?.messages || []).length;
+  if (msgLen > maxChars) throw new FqaiError(400, `本次发送给 AI 的内容过长（${msgLen} > ${maxChars} 字符），请精简后重试`);
   if (typeof globalThis.__fqaiModelHook === 'function') return globalThis.__fqaiModelHook(cfg, body); // 仅离线测试页使用
   body = Object.assign({}, body); delete body.fqAction;
   if (!cfg.apiKey) throw new FqaiError(503, 'AI 助手尚未配置：请在 Cloudflare 项目设置中添加 DEEPSEEK_API_KEY');
@@ -634,9 +671,8 @@ async function fqaiChat(env, cfg, db, user, body, emit, deps) {
   const t0 = Date.now();
   const question = String(body.message || '').trim().slice(0, 2000);
   if (!question) throw new FqaiError(400, '请输入问题');
-  await fqaiTake(db, user, 'chat', cfg.dailyChat);
-  await fqaiTakePro(db, user, cfg);
-  const idx = await fqaiLoad(db);
+  const idx = await (deps?.loadIdx ? deps.loadIdx() : fqaiLoad(db));
+  await fqaiTakeQuota(db, user, 'chat', cfg.dailyChat, cfg);
   const history = (Array.isArray(body.history) ? body.history : []).slice(-8)
     .filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
     .map(m => ({ role: m.role, content: m.content.slice(0, 2500) }));
@@ -649,15 +685,18 @@ async function fqaiChat(env, cfg, db, user, body, emit, deps) {
   const W = web ? fqaiWebSession({ cfg, db, user, idx }, { emit, block: chatBlock, maxSearch: 4, maxOpen: 4 }) : null;
   const ctx = { env, cfg, db, user, idx, emit, verifyUsed: false, tokensIn: 0, tokensOut: 0, W, stu, deps };
   const used = []; const seen = new Set();
+  const maxRounds = Math.max(1, cfg.maxChatRounds || 6);
   let answer = '';
   try {
-    for (let round = 0; round < 9; round++) {
-      const last = round === 8;
-      const out = await fqaiModel(cfg, { model: cfg.model, messages, tools: last ? undefined : tools, thinking: { type: 'disabled' }, temperature: 0.2, max_tokens: 3000 });
+    for (let round = 0; round < maxRounds; round++) {
+      const last = round === maxRounds - 1;
+      const mReq = { model: cfg.model, messages, tools: last ? undefined : tools, thinking: { type: 'disabled' }, temperature: 0.2, max_tokens: 3000 };
+      const out = await (deps?.model ? deps.model(cfg, mReq) : fqaiModel(cfg, mReq));
       ctx.tokensIn += out.usage?.prompt_tokens || 0; ctx.tokensOut += out.usage?.completion_tokens || 0;
       const msg = out.choices?.[0]?.message || {};
       const calls = msg.tool_calls || [];
       if (!calls.length) { answer = msg.content || ''; break; }
+      if (last) break;
       messages.push({ role: 'assistant', content: msg.content || '', tool_calls: calls });
       for (const c of calls) {
         let args = {};
@@ -1088,8 +1127,9 @@ async function fqaiResearch(deps, run, W, spec) {
   const tools = FQAI_WEB_TOOLS.map(f => ({ type: 'function', function: f }));
   let content = '';
   // 每次请求对外调用有上限（Cloudflare 子请求数），所以轮数、搜索数、打开页数都有封顶
-  for (let round = 0; round < 8; round++) {
-    const last = round === 7 || (W.searches >= W.maxSearch && W.opens >= W.maxOpen);
+  const maxResearchRounds = Math.min(8, Math.max(1, run.maxRunModelCalls || 8));
+  for (let round = 0; round < maxResearchRounds; round++) {
+    const last = round === maxResearchRounds - 1 || (W.searches >= W.maxSearch && W.opens >= W.maxOpen);
     if (last && round) messages.push({ role: 'user', content: '工具次数已用完。请根据已经读到的原文，现在只输出最终 JSON。' });
     const out = await deps.model(run, { model: run.model, messages, tools: last ? undefined : tools, thinking: { type: 'disabled' }, temperature: 0.1, max_tokens: 3000, fqAction: 'research' });
     deps.tokens.in += out.usage?.prompt_tokens || 0; deps.tokens.out += out.usage?.completion_tokens || 0;
@@ -2123,7 +2163,7 @@ async function fqaiActDbscan(deps, run, user, scope) {
   md += affected.length ? `\n\n**受影响的申请（${affected.length}）**：` + affected.map(x => `[${name(x.a.studentId)}](#/student/${x.a.studentId}) ${fqaiSchoolLabel(idx, x.a)} ${x.a.program || ''}`).join('；') : '\n\n你名下没有受影响的申请。';
   let cards = [], manual = [];
   if (affected.length && run) {
-    const studs = [...new Set(affected.map(x => x.a.studentId))].slice(0, 6);
+    const studs = [...new Set(affected.map(x => x.a.studentId))].slice(0, Math.min(4, Math.max(1, (run.maxRunModelCalls || 8) - 1)));
     for (const sid of studs) {
       const B = await fqaiLoadBundle(deps, sid);
       const X = fqaiX(deps, B, { cats: ['process', 'audition', 'english', 'portfolio', 'academic'], action: 'dbscan' });
@@ -2165,10 +2205,9 @@ async function fqaiEssay(deps, run, user, scope, body) {
     const paras = text.split(/\n\s*\n/).map(x => x.trim()).filter(Boolean);
     return { summary: '', md: `**${doc.title}**：${v} ${lim?.unit === 'chars' ? '字符' : '词'}${lim ? ` / 上限 ${lim.n}（${v > lim.n ? '超出 ' + (v - lim.n) : '还有 ' + (lim.n - v)}）` : '（这份文书没有登记篇幅上限）'}；共 ${w} 词、${ch} 字符、${paras.length} 段。\n\n- 各段长度：` + paras.map((p, i) => `第 ${i + 1} 段 ${fqaiWords(p)} 词`).join('、') + '\n- 篇幅上限以官网为准；系统按这份文书登记的篇幅计算。' };
   }
-  await fqaiTake(deps.db, user, 'essay', deps.cfg.dailyEssay);
-  await fqaiTakePro(deps.db, user, run);
+  if ((op === 'grammar' || op === 'polish') && !text.trim()) throw new FqaiError(400, '正文是空的');
+  await fqaiTakeQuota(deps.db, user, 'essay', deps.cfg.dailyEssay, run);
   if (op === 'grammar' || op === 'polish') {
-    if (!text.trim()) throw new FqaiError(400, '正文是空的');
     const out = await fqaiAsk(deps, run, 'essay-' + op, `你是英文申请文书的语言编辑，服务对象是枫琴的文书老师。只输出 JSON。${integrity}
 ${op === 'grammar' ? '本次只改硬性语言错误：拼写、时态、主谓一致、冠词、介词搭配、单复数、标点、拼写体系不统一。不要改风格。' : '本次做润色：句式、衔接、重复用词、中式英语、套话。不要改硬性语法以外的事实。如果某条改写不得不加入原文没有的细节，把 adds 设为 true。最多 12 条，选最值得改的。'}
 每条建议的 from 必须是原文中连续的一段原句（逐字复制，含标点），尽量短但能唯一定位；to 是替换后的文字；why 用中文一句话说明。
@@ -2233,7 +2272,7 @@ async function fqaiRunAction(deps, run, user, scope, body, emit) {
   let result;
   try {
     if (A.student && !scope.manage.has(String(body.studentId || ''))) throw new FqaiError(403, '你没有这位学生的管理权限');
-    if (A.model) { if (!deps.cfg.apiKey) throw new FqaiError(503, 'AI 助手尚未配置：请在 Cloudflare 项目设置中添加 DEEPSEEK_API_KEY'); await fqaiTake(deps.db, user, 'chat', deps.cfg.dailyChat); await fqaiTakePro(deps.db, user, run); }
+    if (A.model) { if (!deps.cfg.apiKey) throw new FqaiError(503, 'AI 助手尚未配置：请在 Cloudflare 项目设置中添加 DEEPSEEK_API_KEY'); await fqaiTakeQuota(deps.db, user, 'chat', deps.cfg.dailyChat, run); }
     if (action === 'brief') {
       emit({ type: 'status', text: '正在汇总你名下的事项…' });
       result = fqaiBrief(user, scope, await deps.data.rows(['applications', 'submissions', 'rounds', 'tasks', 'documents', 'refRequests', 'recommenders']), fqaiDay());
@@ -2278,9 +2317,10 @@ async function fqaiDispatch(path, method, body, deps) {
       else { const r = await db.prepare("SELECT value FROM meta WHERE key = 'reqdb:head'").first(); const h = r ? JSON.parse(r.value) : null; if (h) data = { exportedAt: h.exportedAt || '', schools: (h.schools || []).length, records: (h.schools || []).reduce((a, x) => a + (x.recordCount || 0), 0) }; }
     } catch (_) {}
     const U = Object.fromEntries(((await db.prepare('SELECT kind, n FROM fq_ai_usage WHERE day = ? AND user_id = ?').bind(fqaiDay(), user.id).all()).results || []).map(x => [x.kind, x.n]));
+    const G = await fqaiUsage(db, '__global__', 'global');
     return { json: { enabled: !!cfg.apiKey, version: FQAI_VERSION, assistant: canAssist, essay: canEssay, user: { name: user.name, role: user.role }, models: { flash: cfg.model, pro: cfg.proModel },
       web: cfg.web, deletePolicy: cfg.deletePolicy,
-      usage: { web: U.web || 0, webLimit: cfg.dailyWeb, used: U.chat || 0, limit: cfg.dailyChat, essay: U.essay || 0, essayLimit: cfg.dailyEssay, verify: U.verify || 0, verifyLimit: cfg.dailyVerify, pro: U.pro || 0, proLimit: cfg.dailyPro }, data, pasteExample: deps.pasteExample || '' } };
+      usage: { web: U.web || 0, webLimit: cfg.dailyWeb, used: U.chat || 0, limit: cfg.dailyChat, essay: U.essay || 0, essayLimit: cfg.dailyEssay, verify: U.verify || 0, verifyLimit: cfg.dailyVerify, pro: U.pro || 0, proLimit: cfg.dailyPro, global: G, globalLimit: cfg.dailyGlobal }, data, pasteExample: deps.pasteExample || '' } };
   }
   if (!canAssist && !canEssay) throw new FqaiError(403, 'AI 助手仅对内部顾问开放');
   let m;
@@ -2329,9 +2369,8 @@ async function fqaiDispatch(path, method, body, deps) {
       const t0 = Date.now(), qRaw = String(body.question || '').slice(0, 500);
       const qLog = recId + (qRaw ? ' ' + await fqaiDigest(qRaw) : '');
       try {
-        await fqaiTake(db, user, 'verify', cfg.dailyVerify);
-        await fqaiTakePro(db, user, run);
         const idx = await deps.loadIdx();
+        await fqaiTakeQuota(db, user, 'verify', cfg.dailyVerify, run);
         const rep = await fqaiVerify(deps.env, run, db, idx, recId, qRaw, emit);
         await fqaiLog(db, { user: user.id, kind: 'verify', question: qLog, tokensIn: rep.usage?.prompt_tokens, tokensOut: rep.usage?.completion_tokens, ms: Date.now() - t0, ok: true });
         await emit({ type: 'verify', report: Object.assign({}, rep, { usage: undefined }) });
@@ -2389,7 +2428,11 @@ async function fqaiRoute(req, env, url) {
       if (text.length > 120000) throw new FqaiError(413, '内容过长');
       try { body = JSON.parse(text || '{}'); } catch (_) { throw new FqaiError(400, '请求格式不对'); }
     }
-    const deps = { env, cfg, db, user, data: fqaiD1Data(db), loadIdx: () => fqaiLoad(db), model: (run, b) => fqaiModel(run, b), log: e => fqaiLog(db, e), tokens: { in: 0, out: 0 } };
+    const deps = { env, cfg, db, user, data: fqaiD1Data(db), loadIdx: () => fqaiLoad(db), modelCalls: 0, model: (run, b) => {
+      const maxCalls = run?.maxRunModelCalls || cfg.maxRunModelCalls || 8;
+      if (++deps.modelCalls > maxCalls) throw new FqaiError(429, `单次任务的 AI 调用已达上限（${maxCalls} 次）`);
+      return fqaiModel(run, b);
+    }, log: e => fqaiLog(db, e), tokens: { in: 0, out: 0 } };
     const r = await fqaiDispatch(path, req.method, body, deps);
     return r.stream ? fqaiStream(r.stream) : fqaiJSON(r.json);
   } catch (e) {
