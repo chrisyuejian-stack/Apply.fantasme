@@ -54,8 +54,7 @@
     { id: 'repertoire', label: '曲目对照', icon: 'music', need: 'student', model: true, tip: '把曲目表和各校考试曲目要求逐校对照' },
     { id: 'schools', label: '选校建议', icon: 'school', need: 'student', model: true, tip: '按专业、层次、语言成绩和剩余时间从院校库里找候选校' },
     { id: 'dbscan', label: '院校库更新检查', icon: 'db', need: null, model: true, tip: '院校库导入新版本后，找出受影响的申请和任务' },
-    { id: 'auditAll', label: '体检总览', icon: 'list', need: null, model: false, tip: '名下所有学生的任务问题一览（程序计算，不调用 AI、不联网）' },
-    { id: 'brief', label: '今日简报', icon: 'sun', need: null, model: false, tip: '你名下的逾期、即将到期、待审文书和关键日期' }
+    { id: 'auditAll', label: '体检总览', icon: 'list', need: null, model: false, tip: '名下所有学生的任务问题一览（程序计算，不调用 AI、不联网）' }
   ];
   const ALL_TOOLS = TOOLS.concat(MORE_TOOLS, [
     { id: 'audit', label: '流程体检', icon: 'flow', need: 'student', model: true },
@@ -75,10 +74,41 @@
   const SRC = { official: '学校官网', platform: '官方平台', other: '第三方' };
   const webOn = () => status?.web !== false && LS.get('fqai:web', true) !== false;
   const LV = { UG: '本科', PG: '研究生', ALL: '通用' };
+  const BJT = () => new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
 
-  let status = null, conv = SS.get(KEY, []), busy = false, built = false, userId = null, moreOpen = false, draftOpen = false;
+  let status = null, conv = SS.get(KEY, []), busy = false, built = false, userId = null, moreOpen = false, draftOpen = false, queue = null, queueLoading = false;
   let sel = SS.get('fqai:sel', { studentId: '', applicationId: '' });
   let root, panel, body, input, sendBtn, pasteBtn, drawer, foot, ctxBar;
+
+  const qKey = () => 'fqai:qhide:' + (userId || 'anon');
+  const qToday = () => queue?.today || BJT();
+  function qHidden() {
+    const v = LS.get(qKey(), null);
+    if (!v || v.day !== qToday() || !Array.isArray(v.ids)) return new Set();
+    return new Set(v.ids);
+  }
+  function qHide(id) {
+    const day = qToday();
+    const s = qHidden();
+    s.add(id);
+    LS.set(qKey(), { day, ids: [...s].slice(-100) });
+    if (built && !conv.length) renderAll();
+  }
+  function qUnhideAll() {
+    LS.set(qKey(), { day: qToday(), ids: [] });
+    if (built && !conv.length) renderAll();
+  }
+  async function loadQueue() {
+    if (!userId || (!status?.assistant && !status?.essay)) return;
+    queueLoading = true;
+    if (built && !conv.length && !queue) renderAll();
+    try {
+      const res = await fetch('/api/ai/queue', { credentials: 'same-origin' });
+      if (res.ok) queue = await res.json();
+    } catch (_) {}
+    queueLoading = false;
+    if (built && !conv.length) renderAll();
+  }
 
   /* ---------------- Markdown（先转义，只支持有限格式） ---------------- */
   function inline(s) {
@@ -164,26 +194,27 @@
 
   /* ---------------- 界面 ---------------- */
   function build() {
+    const canAssist = !!status?.assistant;
     root = document.createElement('div');
     root.className = 'fqai';
     root.innerHTML = `
-      <button type="button" class="fqai-fab" aria-label="打开 AI 助手">${ICON.spark}<span>AI 助手</span></button>
-      <section class="fqai-panel" role="dialog" aria-label="AI 助手" hidden>
+      <button type="button" class="fqai-fab" aria-label="${canAssist ? '打开 AI 助手' : '打开今日待办'}">${ICON.spark}<span>${canAssist ? 'AI 助手' : '今日待办'}</span></button>
+      <section class="fqai-panel" role="dialog" aria-label="${canAssist ? 'AI 助手' : '今日待办'}" hidden>
         <header class="fqai-head">
-          <div class="fqai-title"><b>AI 助手</b><span class="fqai-sub">${ICON.shield}只提建议 · 每项修改都需你确认</span></div>
-          <button type="button" class="fqai-icon" data-fq="reset" title="清空对话" aria-label="清空对话">${ICON.reset}</button>
+          <div class="fqai-title"><b>${canAssist ? 'AI 助手' : '今日待办'}</b><span class="fqai-sub">${canAssist ? `${ICON.shield}只提建议 · 每项修改都需你确认` : '程序排序 · 最多 7 条待处理文书 · 不调模型'}</span></div>
+          ${canAssist ? `<button type="button" class="fqai-icon" data-fq="reset" title="清空对话" aria-label="清空对话">${ICON.reset}</button>` : ''}
           <button type="button" class="fqai-icon" data-fq="close" title="关闭" aria-label="关闭">${ICON.close}</button>
         </header>
-        <div class="fqai-ctx"></div>
+        <div class="fqai-ctx" ${canAssist ? '' : 'hidden'}></div>
         <div class="fqai-body" aria-live="polite"></div>
-        <form class="fqai-input">
+        <form class="fqai-input" ${canAssist ? '' : 'hidden'}>
           <textarea rows="1" maxlength="6000" placeholder="问院校库或学生情况；粘贴邮件后可点「转任务」" aria-label="输入问题或粘贴内容"></textarea>
           <div class="fqai-ibtns">
             <button type="button" class="fqai-paste" title="从粘贴的内容里提取待办，生成任务建议卡片">${ICON.paste}<span>转任务</span></button>
             <button type="submit" class="fqai-send" aria-label="发送提问">${ICON.send}</button>
           </div>
         </form>
-        <div class="fqai-foot"></div>
+        <div class="fqai-foot" ${canAssist ? '' : 'hidden'}></div>
         <div class="fqai-drawer" hidden></div>
       </section>`;
     document.body.appendChild(root);
@@ -204,15 +235,14 @@
     input.addEventListener('input', autosize);
     document.addEventListener('keydown', e => { if (e.key === 'Escape' && !panel.hidden && !document.querySelector('#modal .modal')) { if (!drawer.hidden) closeDrawer(); else toggle(false); } });
     built = true;
-    syncCtx(true);
-    renderFoot();
+    if (canAssist) { syncCtx(true); renderFoot(); }
     renderAll();
   }
   function autosize() { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 150) + 'px'; }
   function toggle(open) {
     panel.hidden = !open;
     root.classList.toggle('open', open);
-    if (open) { syncCtx(false); refreshCards(); scrollEnd(); }
+    if (open) { loadQueue(); if (status?.assistant) { syncCtx(false); refreshCards(); } scrollEnd(); }
   }
   function scrollEnd() { requestAnimationFrame(() => { body.scrollTop = body.scrollHeight; }); }
   function proChk() {
@@ -220,7 +250,7 @@
     return `<label class="fqai-pro-chk" title="开启后本次将使用 Pro 模型"><input type="checkbox" data-sel="pro-inline" ${LS.get('fqai:mode', 'flash') === 'pro' ? 'checked' : ''}>Pro</label>`;
   }
   function renderCtx() {
-    if (!ctxBar) return;
+    if (!ctxBar || !status?.assistant) return;
     const studs = A.students();
     const apps = sel.studentId ? A.apps(sel.studentId) : [];
     const on = !!status?.enabled;
@@ -247,6 +277,9 @@
       ${draftOpen && on ? `<div class="fqai-draftbar"><span class="fqai-draftbar-t">起草类型：</span>${DRAFT_TYPES.map(d => `<button type="button" class="fqai-chip" data-draft-sub="${d.sub}" data-draft-label="${esc(d.label)}">${esc(d.label)}</button>`).join('')}${proChk()}</div>` : ''}`;
   }
   function renderFoot() {
+    if (!foot) return;
+    if (!status?.assistant) { foot.hidden = true; foot.innerHTML = ''; return; }
+    foot.hidden = false;
     const u = status?.usage;
     const mode = LS.get('fqai:mode', 'flash');
     const w = status?.web !== false;
@@ -255,21 +288,40 @@
       <label class="fqai-webt" title="${w ? '检查（生成卡片）和提问时，允许 AI 搜索并阅读学校官网；检索词不含学生个人信息' : '服务器已关闭联网检索（AI_WEB=off）'}"><input type="checkbox" data-sel="web" ${webOn() ? 'checked' : ''} ${w ? '' : 'disabled'}>${ICON.globe}联网</label>` : '';
     foot.innerHTML = `${modelCtrl}<span>${on && u ? `今日 ${u.used}${u.limit ? '/' + u.limit : ''} 次${w && u.webLimit ? ` · 联网 ${u.web || 0}/${u.webLimit}` : ''} · ` : ''}发给 AI 的上下文仅含申请进度与学业/曲目要点（含已裁剪的动态/粘贴文本与该生相关员工；已去除监护人、证件号、手机号、邮箱、住址与生日；联网检索不含姓名）</span>`;
   }
+  function renderQueue() {
+    if (!queue && queueLoading) return `<div class="fqai-q"><div class="fqai-q-h"><b>今天先做这几件</b><span>加载中…</span></div></div>`;
+    if (!queue) return '';
+    const hidden = qHidden();
+    const all = queue.items || [];
+    const vis = all.filter(x => !hidden.has(x.id)).slice(0, 7);
+    const hiddenCount = all.filter(x => hidden.has(x.id)).length;
+    const over = (queue.overload || []).map(x => `<span>${esc(x.advisorName)}：${x.overdue ? `逾期 ${x.overdue}` : ''}${x.overdue && x.blocked ? ' · ' : ''}${x.blocked ? `受阻 ${x.blocked}` : ''}${!x.overdue && !x.blocked ? `7 日内 ${x.soon7}` : ''}</span>`).join('；');
+    return `<div class="fqai-q">
+      <div class="fqai-q-h"><b>今天先做这几件</b><span>${queue.total ? `按紧急度排序 · 共 ${queue.total} 项` : '程序排序 · 不耗额度'}</span></div>
+      ${over ? `<div class="fqai-q-over">${ICON.warn}<div><b>顾问负载提示：</b>${over}</div></div>` : ''}
+      ${vis.length ? `<ul class="fqai-q-list">${vis.map(it => `<li class="fqai-q-item"><a class="fqai-q-a" href="${esc(it.href)}" data-nav="1"><span class="fqai-pill ${esc(it.level || 'muted')}">${esc(it.tag)}</span><span class="fqai-q-txt"><b>${esc(it.title)}</b>${it.meta ? `<small>${esc(it.meta)}</small>` : ''}</span></a><button type="button" class="fqai-q-hide" data-qhide="${esc(it.id)}" title="隐藏到北京时间今天结束">今天不看</button></li>`).join('')}</ul>`
+        : `<p class="fqai-tiny fqai-q-empty">${hiddenCount ? '今天的提醒都已收起。' : '今天暂无紧迫待办，保持节奏即可。'}</p>`}
+      ${hiddenCount ? `<div class="fqai-q-foot"><span>已设「今天不看」 ${hiddenCount} 项</span><button type="button" class="fqai-mini" data-fq="q-show">恢复显示</button></div>` : ''}
+    </div>`;
+  }
   function renderAll() {
+    if (!status?.assistant) {
+      body.innerHTML = `<div class="fqai-empty">${renderQueue()}<p class="fqai-tiny">点上面条目可直接定位到对应文书；润色、语法检查与事实核对请打开文书编辑或审核窗口使用。</p></div>`;
+      input.disabled = sendBtn.disabled = pasteBtn.disabled = true;
+      return;
+    }
     const on = !!status?.enabled;
     input.disabled = sendBtn.disabled = pasteBtn.disabled = !on;
     if (!conv.length) {
       if (!on) {
-        body.innerHTML = `<div class="fqai-empty"><b>当前未配置 AI 密钥（仅可使用程序检查与总览）</b><p>配置 <code>DEEPSEEK_API_KEY</code> 后可解锁自由提问、粘贴转任务、起草消息与生成建议卡片。下方程序检查不调用大模型、也不消耗额度。</p>
+        body.innerHTML = `<div class="fqai-empty">${renderQueue()}<div class="fqai-q-sep"><b>程序检查与总览（免密钥）</b><small>配置 DEEPSEEK_API_KEY 后可解锁提问、起草与建议卡片</small></div>
           <div class="fqai-quick">
             <button type="button" data-tool="check">${ICON.flow}<span><b>检查这位学生</b><small>程序逐项检查流程问题与提交前齐备情况（免密钥）</small></span></button>
             <button type="button" data-tool="auditAll">${ICON.list}<span><b>体检总览</b><small>名下所有学生的任务问题一览（免密钥）</small></span></button>
-            <button type="button" data-tool="brief">${ICON.sun}<span><b>今日简报</b><small>我名下的逾期、到期、待审文书和关键日期</small></span></button>
           </div></div>`;
         return;
       }
-      body.innerHTML = `<div class="fqai-empty"><b>选一个学生，再点上方的功能</b>
-        <p>默认检查由程序直接计算（不调 AI、不扣额度）；需要修改卡片时再按需生成。<b>每一项修改都要你点「采纳」才会生效</b>，采纳后和你手动操作一样记录在动态里，可以撤销。</p>
+      body.innerHTML = `<div class="fqai-empty">${renderQueue()}<div class="fqai-q-sep"><b>常用工具</b><small>选一个学生可做检查 / 起草，或直接粘贴邮件</small></div>
         <div class="fqai-quick">
           <button type="button" data-tool="check">${ICON.flow}<span><b>检查这位学生</b><small>程序直出流程问题与提交前检查，可按需生成建议卡片</small></span></button>
           <button type="button" data-tool="draft">${ICON.msg}<span><b>起草</b><small>家长进度汇报、考试提醒、催交材料、推荐人提醒</small></span></button>
@@ -766,8 +818,9 @@
     const nav = e.target.closest('a[data-nav]');
     if (nav) { if (window.matchMedia('(max-width:640px)').matches) toggle(false); return; }
     if (moreOpen && !e.target.closest('.fqai-more-wrap')) { moreOpen = false; renderCtx(); }
-    const t = e.target.closest('[data-fq],[data-tool],[data-draft-sub],[data-rec],[data-verify],[data-card],[data-follow],[data-copy]');
+    const t = e.target.closest('[data-fq],[data-tool],[data-draft-sub],[data-rec],[data-verify],[data-card],[data-follow],[data-copy],[data-qhide]');
     if (!t) return;
+    if (t.dataset.qhide) return qHide(t.dataset.qhide);
     if (t.dataset.card) return onCard(t);
     if (t.dataset.draftSub) {
       draftOpen = false; moreOpen = false; renderCtx();
@@ -779,7 +832,8 @@
     if (t.dataset.copy) { const ta = body.querySelector(`textarea[data-draft="${t.dataset.copy}"]`); if (ta) copy(ta.value, t); return; }
     if (t.dataset.fq === 'more') { moreOpen = !moreOpen; if (moreOpen) draftOpen = false; return renderCtx(); }
     if (t.dataset.fq === 'close') return toggle(false);
-    if (t.dataset.fq === 'reset') { if (busy) return; conv = []; SS.set(KEY, conv); moreOpen = false; draftOpen = false; closeDrawer(); return renderAll(); }
+    if (t.dataset.fq === 'reset') { if (busy) return; conv = []; SS.set(KEY, conv); moreOpen = false; draftOpen = false; closeDrawer(); renderAll(); loadQueue(); return; }
+    if (t.dataset.fq === 'q-show') return qUnhideAll();
     if (t.dataset.fq === 'back') return closeDrawer();
     if (t.dataset.fq === 'paste-demo') { input.value = status?.pasteExample || ''; autosize(); input.focus(); return; }
     if (t.dataset.verify) return verify(t.dataset.verify, drawer.querySelector('.fqai-vq')?.value || '');
@@ -1085,16 +1139,18 @@
     conv = id === SS.get('fqai:uid', null) ? SS.get(KEY, []) : [];
     SS.set('fqai:uid', id); SS.set(KEY, conv);
     if (root) { root.remove(); root = null; built = false; }
-    status = null;
+    status = null; queue = null; queueLoading = false;
     if (!id) return;
     try {
       const res = await fetch('/api/ai/status', { credentials: 'same-origin' });
       if (!res.ok) return;
       status = await res.json();
-      if (status.assistant) build();
+      if (status.assistant || status.essay) { build(); loadQueue(); }
     } catch (_) {}
   }
   window.addEventListener('hashchange', () => { start(); if (built && !panel.hidden) syncCtx(false); else if (built) syncCtx(false); });
   document.addEventListener('click', () => setTimeout(start, 0));
+  const appEl = document.getElementById('app');
+  if (appEl) new MutationObserver(() => start()).observe(appEl, { childList: true });
   setTimeout(start, 0);
 })();
