@@ -1,4 +1,4 @@
-var we = ["students", "applications", "submissions", "rounds", "tasks", "documents", "versions", "reviews", "materials", "repertoire", "recommenders", "refRequests", "activity", "templates", "boardTasks"],
+var we = ["students", "applications", "submissions", "rounds", "tasks", "documents", "versions", "reviews", "materials", "repertoire", "recommenders", "refRequests", "activity", "templates", "boardTasks", "feeBills"],
   Pn = ["supervisor", "advisor", "writer"],
   ve = t => Pn.includes(t.role);
 function Ln(t) {
@@ -32,6 +32,7 @@ var $e = (t, e) => t.visible.has(e),
 function Be(t, e, i, n = {}) {
   let o = t.user,
     r = o.role === "student";
+  if (e === "feeBills") return fqFeeVisible(t,i) ? i : null;
   if (e === "boardTasks") return fqBoardVisible(t,i) ? i : null;
   if (e === "templates") return ve(o) ? i : null;
   let s = e === "students" ? i.id : i.studentId;
@@ -97,6 +98,7 @@ async function Qe(t, e, i, n, o, r, files) {
     ok: !0,
     record: o
   } : a("\u53EA\u6709\u7533\u8BF7\u4E3B\u7BA1\u53EF\u4EE5\u4FEE\u6539\u4EFB\u52A1\u6A21\u677F");
+  if (e === "feeBills") return {ok:false,error:"请使用费用单专用接口"};
   if (e === "boardTasks") return t.boardV12 ? {ok:false,error:"请使用任务专用操作接口"} : fqBoardPermission(s, i, n, o, r);
   let d = e === "students" ? n?.id || o?.id : n?.studentId || o?.studentId;
   if (i === "put" && n && e !== "students" && o.studentId !== n.studentId) return a("\u4E0D\u80FD\u628A\u8BB0\u5F55\u79FB\u5230\u5176\u4ED6\u5B66\u751F");

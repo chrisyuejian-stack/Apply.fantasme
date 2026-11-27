@@ -1,5 +1,6 @@
 async function $n(t, e, i, n, o, r) {
   if (!Kn.test(o)) throw new I(400, "\u8BB0\u5F55\u7F16\u53F7\u65E0\u6548");
+  if(n==='feeBills') throw new I(403,'请使用费用单专用接口');
   let s = await de(e, i),
     fqOriginal = await e.DB.prepare("SELECT data FROM records WHERE tbl=? AND id=?").bind(n,o).first(),
     a = fqOriginal ? JSON.parse(fqOriginal.data) : null,
