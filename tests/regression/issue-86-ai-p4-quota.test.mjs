@@ -254,6 +254,7 @@ test('#86 P4+P5: per-run bounds enforce maxChatRounds, maxRunModelCalls, and max
       { role: 'user', content: 'x'.repeat(2400) },
       { role: 'assistant', content: 'y'.repeat(2400) },
     ];
+    const usageBeforeOversized = h.db.raw.prepare('SELECT COALESCE(SUM(n), 0) AS total FROM fq_ai_usage').get().total;
     const oversized = parseSse((await h.call('/api/ai/chat', {
       method: 'POST',
       cookie: advCookie,
@@ -261,6 +262,122 @@ test('#86 P4+P5: per-run bounds enforce maxChatRounds, maxRunModelCalls, and max
     })).text);
     assert.equal(hookInvokedForOversized, false);
     assert.ok(oversized.some(e => e.type === 'error' && e.text.includes('内容过长')));
+    assert.equal(h.db.raw.prepare('SELECT COALESCE(SUM(n), 0) AS total FROM fq_ai_usage').get().total, usageBeforeOversized);
+  } finally {
+    globalThis.__fqaiModelHook = prevModel;
+    globalThis.__fqaiWebHook = prevWeb;
+    h.db.close();
+  }
+});
+
+test('#96 (#94 red-team probes): maxModelChars 400 leaves fq_ai_usage=0, upstream failures refund chat/pro/essay/global/web, and __global__ user id rejected', async () => {
+  const h = await createWorkerHarness({
+    DEEPSEEK_API_KEY: 'synthetic-offline-hook-key',
+    AI_WEB: 'on',
+    AI_DAILY_CHAT: '5',
+    AI_DAILY_ESSAY: '5',
+    AI_DAILY_WEB: '5',
+    AI_DAILY_PRO: '5',
+    AI_DAILY_GLOBAL: '5',
+    AI_MAX_MODEL_CHARS: '4000',
+  });
+  const prevModel = globalThis.__fqaiModelHook;
+  const prevWeb = globalThis.__fqaiWebHook;
+  try {
+    const { supCookie, advId, advCookie } = await setupUsers(h);
+    seedReqdb(h.db);
+
+    // 1) Reserved user id '__global__' cannot be created via /api/users
+    const reserved = await h.call('/api/users', {
+      method: 'POST',
+      cookie: supCookie,
+      body: { id: '__global__', username: 'fake.global', name: '伪装', role: 'advisor' },
+    });
+    assert.equal(reserved.status, 400);
+
+    // 2) Oversized chat (pro) hits 400 BEFORE fqaiTakeQuota -> 0 rows/sum in fq_ai_usage
+    let called = 0;
+    globalThis.__fqaiModelHook = async () => {
+      called++;
+      throw new Error('upstream model down');
+    };
+    const huge = [
+      { role: 'user', content: 'z'.repeat(2400) },
+      { role: 'assistant', content: 'y'.repeat(2400) },
+    ];
+    for (let i = 0; i < 6; i++) {
+      const evs = parseSse((await h.call('/api/ai/chat', {
+        method: 'POST',
+        cookie: advCookie,
+        body: { message: 'hi', mode: 'pro', history: huge, web: false },
+      })).text);
+      assert.ok(evs.some(e => e.type === 'error' && e.text.includes('内容过长')));
+    }
+    assert.equal(called, 0);
+    assert.equal(h.db.raw.prepare('SELECT COALESCE(SUM(n), 0) AS total FROM fq_ai_usage').get().total, 0);
+
+    // 3) Upstream model failure refunds chat/pro/global on chat, run, and essay
+    const failChat = parseSse((await h.call('/api/ai/chat', {
+      method: 'POST',
+      cookie: advCookie,
+      body: { message: 'normal', mode: 'pro', web: false },
+    })).text);
+    assert.ok(failChat.some(e => e.type === 'error'));
+    assert.equal(h.db.raw.prepare('SELECT COALESCE(SUM(n), 0) AS total FROM fq_ai_usage').get().total, 0);
+
+    assert.equal((await h.call('/api/t/students/stu-rf', {
+      method: 'PUT',
+      cookie: supCookie,
+      body: { id: 'stu-rf', name: '李退款', advisorId: advId, status: 'active', level: 'UG', majorId: 'violin', season: 'Fall 2027' },
+    })).status, 200);
+    assert.equal((await h.call('/api/t/documents/doc-rf', {
+      method: 'PUT',
+      cookie: supCookie,
+      body: { id: 'doc-rf', studentId: 'stu-rf', title: 'PS', type: 'ps' },
+    })).status, 200);
+
+    const failRun = parseSse((await h.call('/api/ai/run', {
+      method: 'POST',
+      cookie: advCookie,
+      body: { action: 'audit', studentId: 'stu-rf', mode: 'pro', web: false },
+    })).text);
+    assert.ok(failRun.some(e => e.type === 'error'));
+    assert.equal(h.db.raw.prepare('SELECT COALESCE(SUM(n), 0) AS total FROM fq_ai_usage').get().total, 0);
+
+    const failEssay = await h.call('/api/ai/essay', {
+      method: 'POST',
+      cookie: advCookie,
+      body: { op: 'grammar', docId: 'doc-rf', mode: 'pro', text: 'I plays violin well.' },
+    });
+    assert.equal(failEssay.status, 500);
+    assert.equal(h.db.raw.prepare('SELECT COALESCE(SUM(n), 0) AS total FROM fq_ai_usage').get().total, 0);
+
+    // 4) Upstream web_search failure (!ok) refunds web quota
+    let chatTurn = 0;
+    globalThis.__fqaiWebHook = async () => ({ ok: false, status: 502 });
+    globalThis.__fqaiModelHook = async () => {
+      if (chatTurn++ === 0) {
+        return {
+          choices: [{
+            message: {
+              role: 'assistant',
+              content: '',
+              tool_calls: [{ id: 'wfail', type: 'function', function: { name: 'web_search', arguments: '{"query":"Peabody violin deadline"}' } }],
+            },
+          }],
+        };
+      }
+      return { choices: [{ message: { role: 'assistant', content: '搜索失败，已降级回答' } }] };
+    };
+    const webFailChat = parseSse((await h.call('/api/ai/chat', {
+      method: 'POST',
+      cookie: advCookie,
+      body: { message: '查 Peabody 截止', web: true },
+    })).text);
+    assert.ok(webFailChat.some(e => e.type === 'answer'));
+    // Chat succeeded (chat=1, global=1), while failed web_search was refunded (web=0)
+    assert.equal(h.db.raw.prepare("SELECT n FROM fq_ai_usage WHERE user_id = ? AND kind = 'chat'").get(advId).n, 1);
+    assert.equal(h.db.raw.prepare("SELECT COALESCE(n, 0) AS n FROM fq_ai_usage WHERE user_id = ? AND kind = 'web'").get(advId)?.n || 0, 0);
   } finally {
     globalThis.__fqaiModelHook = prevModel;
     globalThis.__fqaiWebHook = prevWeb;
