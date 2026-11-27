@@ -423,8 +423,8 @@
     };
   function as(e = "users") {
     if (!de()) return Qe("只有申请主管可以进入系统设置。");
-    const s = [["users", "账号与分配"], ["templates", "任务模板"], ["schools", "院校要求库"], ["data", "数据"]].concat(t ? [["audit", "操作日志"]] : []),
-      i = "templates" === e ? function () {
+    const s = [["users", "账号与分配"], ["collect", "收款码"], ["templates", "任务模板"], ["schools", "院校要求库"], ["data", "数据"]].concat(t ? [["audit", "操作日志"]] : []),
+      i = "collect" === e ? fqFeeCollectPanel() : "templates" === e ? function () {
         const t = st.all("templates");
         return `<div class="panel-head"><div><h3>任务模板</h3><p>顾问确认院校要求后，系统按这些模板列出候选任务，由顾问逐条勾选生成。截止日 = 相关官方截止 + 偏移天数（负数为提前）；“前置”只做顺序提示，不强制。修改模板只影响之后生成的任务。</p></div><button class="btn primary sm" data-act="tpl-new">${I("plus")} 新增模板</button></div>\n    <div class="table-wrap"><table><thead><tr><th>任务</th><th>类别</th><th>适用</th><th>范围</th><th>偏移</th><th>完成联动</th><th>状态</th><th></th></tr></thead><tbody>${t.map(t => `<tr><td class="td-main">${a(t.title)}</td><td>${a(O[t.category])}</td><td class="small">${a(Z[t.cond])}</td><td class="small">${a(K[t.scope] || t.scope)}${(t.after || []).length ? `<div class="td-sub">前置：${a(t.after.map(t => st.get("templates", t)?.title || t).join("、"))}</div>` : ""}</td><td>${t.offset > 0 ? "+" : ""}${t.offset} 天</td><td class="small">${a(W[t.effect || ""])}</td><td>${!1 !== t.active ? '<span class="pill ok">启用</span>' : '<span class="pill">停用</span>'}</td><td class="actions"><button class="btn sm" data-act="tpl-edit" data-id="${t.id}">编辑</button></td></tr>`).join("")}</tbody></table></div>`;
       }() : "schools" === e ? function () {

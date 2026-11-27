@@ -1868,12 +1868,13 @@
       return [["home", "home", "我的申请"], ["intake", "user", "基础信息", ["not_started", "draft"].includes(e) ? {
         n: "!",
         hot: !0
-      } : null]];
+      } : null], ["fees", "folder", "付款", {n: st.all("feeBills").filter(b=>b.status==="sent").length}]];
     }
     if ("writer" === t.role) return [["home", "home", "工作台"], ["docs", "file", "我的文书", o], ["tasks", "checksq", "我的任务", n], ["students", "users", "相关学生"]];
     const l = [["home", "home", "工作台"], ["students", "users", "supervisor" === t.role ? "学生" : "我的学生", {
       n: ce.students().filter(t => "active" === t.status).length
     }], ["tasks", "checksq", "supervisor" === t.role ? "任务" : "我的任务", n], ["docs", "file", "文书协作", o], ["files", "folder", "文件库"]];
+    l.push(["fees","folder","收款",{n:st.all("feeBills").filter(b=>b.status==="claimed").length,hot:true}]);
     return "supervisor" === t.role && l.push(["settings", "settings", "系统设置"]), l;
   }
   function Vs() {
@@ -2301,6 +2302,9 @@
               return `<div class="card ${t.id === e.currentVersionId ? "hl" : ""}"><div class="row between"><div><div class="card-title">V${t.no}${t.id === e.currentVersionId ? " · 当前版本" : ""}</div><div class="card-meta">${Ue(t) ? '<span class="tag">在线正文</span> ' : ""}${a(ze(t))} · ${a($t(t.createdBy))} · ${m(t.createdAt)}</div></div><div class="row" style="gap:4px">${He(t)}</div></div>\n      ${t.note ? `<div class="small mt8">本版修改：${a(t.note)}</div>` : ""}\n      ${Ue(t) && t.id === e.currentVersionId ? `<div class="mt8">${Ge(t, 260)}</div>` : ""}\n      ${s.length ? `<div class="timeline mt12">${s.map(r).join("")}</div>` : ""}</div>`;
             }).join("") || Me("还没有版本", ce.docUpload(e) ? "点击“上传新版本”，登记网盘链接。" : "")}</div></section>\n    <section class="panel"><div class="panel-head"><div><h3>立项要求</h3></div><button class="btn sm" data-act="intake-essays" data-sid="${s.id}">${I("book")} 学生文书素材</button></div><div class="panel-body">\n      <div class="fact"><span>类型</span><div>${a(X(F, e.type))}</div></div>\n      <div class="fact"><span>用于</span><div>${a(Ut(e))}</div></div>\n      <div class="fact"><span>字数 / 篇幅</span><div>${a(e.wordLimit || "—")}</div></div>\n      <div class="fact"><span>写作要求</span><div style="white-space:pre-wrap">${a(e.brief || "—")}</div></div>\n      <div class="fact"><span>学生确认</span><div>${e.needStudentConfirm ? "需要（主管定稿后发给学生）" : "不需要"}</div></div>\n      <div class="fact"><span>截止</span><div>${p(e.dueDate)}</div></div>\n      ${(() => { const fqT = st.where("tasks", x => x.documentId === e.id); return fqT.length ? `<div class="fact"><span>关联任务</span><div>${fqT.map(x => `${a(x.title)}（${a(X(q, x.status))}${x.dueDate ? " · " + p(x.dueDate) : ""}）`).join("<br>")}</div></div>` : ""; })()}\n    </div></section></div>`;
           }(i.a);
+          break;
+        case "fees":
+          d=fqFeePage();
           break;
         case "files":
           d = le() ? ls() : function () {
