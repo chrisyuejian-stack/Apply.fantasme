@@ -45,6 +45,7 @@ function fqApplicationSameOrigin(request) {
 async function Yn(t, e, i) {
   let n = i.pathname.replace(/^\/api/, ""),
     o = t.method;
+  if (n === "/integrations/assistant" || n.startsWith("/integrations/assistant/")) return fqAssistant(t,e,i);
   if (o !== "GET" && t.headers.get("X-FQ") !== "1") throw new I(403, "\u8BF7\u6C42\u88AB\u62D2\u7EDD");
   fqApplicationSameOrigin(t);
   if (n === "/setup-status" && o === "GET") {

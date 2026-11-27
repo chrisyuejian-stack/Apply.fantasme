@@ -3,7 +3,7 @@ async function $n(t, e, i, n, o, r) {
   let s = await de(e, i),
     fqOriginal = await e.DB.prepare("SELECT data FROM records WHERE tbl=? AND id=?").bind(n,o).first(),
     a = fqOriginal ? JSON.parse(fqOriginal.data) : null,
-    d = async (l, v) => l === "refRequestsOf" ? !!(await e.DB.prepare("SELECT 1 FROM records WHERE tbl = 'refRequests' AND json_extract(data, '$.recommenderId') = ?").bind(v).first()) : ue(e, l, v);
+    d = async (l, v) => l === "boardAssignee" ? fqBoardAssignee(e,v) : l === "refRequestsOf" ? !!(await e.DB.prepare("SELECT 1 FROM records WHERE tbl = 'refRequests' AND json_extract(data, '$.recommenderId') = ?").bind(v).first()) : ue(e, l, v);
   if (r === "DELETE") {
     if (!a) return D({
       ok: !0
@@ -45,7 +45,9 @@ async function $n(t, e, i, n, o, r) {
   }
   let h = c.record;
   h.createdAt = a?.createdAt || j(); h.updatedAt = new Date(Math.max(Date.now(), (Date.parse(a?.updatedAt)||0)+1)).toISOString();
-  if (a) {
+  if (n === 'boardTasks') {
+    await fqBoardSave(e, fqOriginal.data, h);
+  } else if (a) {
     const saved = await e.DB.prepare("UPDATE records SET data=?,updated_at=? WHERE tbl=? AND id=? AND data=?").bind(JSON.stringify(h),h.updatedAt,n,o,fqOriginal.data).run();
     if (!saved.meta.changes) throw new I(409,'记录已被更新，请刷新后重试');
   } else {

@@ -1,4 +1,4 @@
-var we = ["students", "applications", "submissions", "rounds", "tasks", "documents", "versions", "reviews", "materials", "repertoire", "recommenders", "refRequests", "activity", "templates"],
+var we = ["students", "applications", "submissions", "rounds", "tasks", "documents", "versions", "reviews", "materials", "repertoire", "recommenders", "refRequests", "activity", "templates", "boardTasks"],
   Pn = ["supervisor", "advisor", "writer"],
   ve = t => Pn.includes(t.role);
 function Ln(t) {
@@ -31,6 +31,7 @@ var $e = (t, e) => t.visible.has(e),
 function Be(t, e, i, n = {}) {
   let o = t.user,
     r = o.role === "student";
+  if (e === "boardTasks") return o.role === "supervisor" || (o.role === "advisor" && i.assigneeId === o.id) ? i : null;
   if (e === "templates") return ve(o) ? i : null;
   let s = e === "students" ? i.id : i.studentId;
   if (!$e(t, s)) return null;
@@ -95,6 +96,7 @@ async function Qe(t, e, i, n, o, r, files) {
     ok: !0,
     record: o
   } : a("\u53EA\u6709\u7533\u8BF7\u4E3B\u7BA1\u53EF\u4EE5\u4FEE\u6539\u4EFB\u52A1\u6A21\u677F");
+  if (e === "boardTasks") return fqBoardPermission(s, i, n, o, r);
   let d = e === "students" ? n?.id || o?.id : n?.studentId || o?.studentId;
   if (i === "put" && n && e !== "students" && o.studentId !== n.studentId) return a("\u4E0D\u80FD\u628A\u8BB0\u5F55\u79FB\u5230\u5176\u4ED6\u5B66\u751F");
   if (i === "put" && !n && e !== "students" && !t.byId[d]) return a("\u5B66\u751F\u4E0D\u5B58\u5728");
