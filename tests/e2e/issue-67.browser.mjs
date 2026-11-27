@@ -1,12 +1,15 @@
-// Local synthetic-data browser verification. Run after npm test; no cloud resources.
-// LOCAL_BOARD_FLAG=0 repeats legacy behavior; M3_EVIDENCE_DIR controls screenshots.
+// 本地合成数据浏览器验证；先运行 npm test，不连接云端资源。
+// 运行：NODE_PATH=$(npm root -g) node tests/e2e/issue-67.browser.mjs
+// 前置：安装 Node 版 playwright（npm install -g playwright），并准备 Chromium。
+// NODE_PATH 指向 npm 全局模块目录；已有其他模块路径时可保留为 NODE_PATH="$(npm root -g):$NODE_PATH"。
+// LOCAL_BOARD_FLAG=0 测关闭场景；M3_EVIDENCE_DIR 指定截图目录；CHROMIUM_EXECUTABLE 指定浏览器路径。
 import {fileURLToPath} from 'node:url';
 import {readFile,writeFile,mkdtemp,mkdir,rm} from 'node:fs/promises';
 import {spawn} from 'node:child_process';
 import {createHmac,createHash} from 'node:crypto';
 import {createRequire} from 'node:module';
-const require=createRequire(new URL('../../../../package.json',import.meta.url));const {chromium}=require('playwright');
-const root=fileURLToPath(new URL('../../../../',import.meta.url)).replace(/\/$/,''),dir=await mkdtemp('/tmp/gpt-m3-browser-'),shots=process.env.M3_EVIDENCE_DIR||'/tmp/gpt-m3-evidence',v12=process.env.LOCAL_BOARD_FLAG!=='0';await mkdir(shots,{recursive:true});
+const require=createRequire(new URL('../../package.json',import.meta.url));const {chromium}=require('playwright');
+const root=fileURLToPath(new URL('../../',import.meta.url)).replace(/\/$/,''),dir=await mkdtemp('/tmp/gpt-m3-browser-'),shots=process.env.M3_EVIDENCE_DIR||'/tmp/gpt-m3-evidence',v12=process.env.LOCAL_BOARD_FLAG!=='0';await mkdir(shots,{recursive:true});
 const key='SyntheticSetup2026',secret='SyntheticBridgeOnlyForLocalBrowser2026';
 let dev=await readFile(root+'/scripts/dev.mjs','utf8');
 dev=dev.replace("from './local-d1.mjs'",`from '${root}/scripts/local-d1.mjs'`).replace("from './local-r2.mjs'",`from '${root}/scripts/local-r2.mjs'`).replace("from '../dist/_worker.js'",`from '${root}/dist/_worker.js'`).replace("const root = resolve(import.meta.dirname, '..');",`const root = '${root}';`).replace('  APPLY_DB: db,',`  APPLY_DB: db, BOARD_V12_ENABLED:process.env.LOCAL_BOARD_FLAG||'1', ASSISTANT_BRIDGE_SECRET:'${secret}',`);
