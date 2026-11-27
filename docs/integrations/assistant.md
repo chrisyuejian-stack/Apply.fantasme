@@ -28,7 +28,9 @@
   - 无请求体时 `body` 为空字符串。
 - `Content-Type: application/json`（有请求体时）。
 
-服务端用常量时间比较签名。签名或时间戳不对：`401 {"error":"签名无效"}`；未配置密钥：`503`。
+服务端用常量时间比较签名。签名或时间戳不对：`401 {"error":"签名无效"}`；未配置密钥（或密钥短于 32 个字符，视为配置不当）：`503`。
+- 请求路径必须是**无尾斜杠的精确路径**（如 `/api/integrations/assistant/advisors`），带尾斜杠即使签名正确也返回 `404`。
+- 时间窗内同一签名可重放（无 nonce）：`POST /tasks` 与 `/cancel` 均幂等、GET 只读，已接受此风险。生产与预览必须使用不同的密钥（签名不含主机名）。
 
 ## 接口
 
@@ -45,6 +47,7 @@
   - **显式 `null`：公开任务板**（见下文）；
   - **省略**：**创建时 = 公开**；**重推时 = 保持原样**（指定的仍是指定，公开的仍是公开，认领不动）。
 - 创建时 `title` 必填；省略的 `importance` 取 `normal`，`note` 为空，`due` 为 `null`。
+- **主管改派会被带 `assignee` 的重推覆盖**：重推里只要**显式带了 `assignee`**，就以它为准，会覆盖主管在申请系统里做的改派。因此助理**只改标题/备注/截止/重要性时请省略 `assignee`**；确需重新指定负责人才带上。（`blocked`/`done`/`cancelled` 状态始终不会被重推改变。）
 - 响应：`200 {"id":"bt-…","status":"open|blocked|done|cancelled","created":true|false}`；对已 `cancelled` 的任务重推返回 `200` 且 `status:"cancelled"`、`created:false`，不做任何修改。
 
 ### externalId 规则
@@ -115,3 +118,4 @@
 - 助理不能物理删除任务，只能撤回（`cancel`）。
 - **主管在申请系统里删除任务 = 软删除，等同撤回**：仅限 `open`/`blocked`，状态变 `cancelled`、`cancelledBy:"supervisor"`，数据保留，并在 `/updates` 里以 `cancelled` 出现一次（**修订 v1.1**：v1.1 写的「被删任务不再出现在 `/updates`」会让助理一直以为公开任务没人认领，改为以 `cancelled` 通知）。`done` 的任务主管不能删除。
 - 申请系统内任何角色都不能新建任务，任务只能由助理推送创建。
+- **备份导入不恢复任务板**：主管的备份导入（`/api/admin/import`）会**忽略** `boardTasks`（避免绕过「只能由助理创建」，也避免绕过 `/updates` 的时间戳游标）。导出仍包含 `boardTasks` 作记录。整库恢复后，未完成的任务由助理按需重新推送（用新的 `externalId`）。
