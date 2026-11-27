@@ -193,7 +193,7 @@ test('#61 v1.2: public creation, partial retry omission/null, ownership transiti
   assert.equal((await action(h,id,'release')).status,403);
   await partial(h,'public',{note:'更新备注'});assert.equal(h.row(id).status,'blocked');
   await partial(h,'public',{assignee:'other'});assert.equal(h.row(id).status,'open');assert.equal(h.row(id).visibility,'assigned');assert.equal(h.row(id).blockedReason,null);assert.equal(h.row(id).claimedBy,null);
-  await partial(h,'public',{due:'2026-12-01',importance:'high'});await partial(h,'public',{note:'',due:null});
+  await partial(h,'public',{due:'2026-12-01',importance:'high'});await partial(h,'public',{note:null,due:null});
   assert.equal(h.row(id).assigneeId,h.other.id);assert.equal(h.row(id).importance,'high');assert.equal(h.row(id).due,null);assert.equal(h.row(id).note,'');
   await partial(h,'public',{assignee:null});assert.equal(h.row(id).assigneeId,null);assert.equal(h.row(id).visibility,'board');
   const item=(await feed(h)).data.items[0];assert.equal(item.assigneeName,null);assert.equal(item.claimedByName,null);

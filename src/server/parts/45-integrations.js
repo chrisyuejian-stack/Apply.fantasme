@@ -162,7 +162,7 @@ async function fqAssistant(request, env, url) {
       const old=original?JSON.parse(original.data):null;
       if(old?.status==='cancelled') return D({id,status:'cancelled',created:false});
       const record={...(old||{id,status:'open',blockedReason:null,blockedAt:null,doneAt:null,doneBy:null,visibility:'assigned',claimedBy:null,claimedAt:null,cancelledAt:null,cancelledBy:null,source:'assistant',externalId,createdBy:'assistant',createdAt:j(),note:'',importance:'normal',due:null,assigneeId:null})};
-      for(const [field,max] of [['title',120],['note',2000]]) if(Object.hasOwn(input,field)||(!old&&field==='title')) record[field]=fqAssistantText(input[field],max,field==='title');
+      for(const [field,max] of [['title',120],['note',2000]]) if(Object.hasOwn(input,field)||(!old&&field==='title')) record[field]=fqAssistantText(field==='note'&&input[field]===null?'':input[field],max,field==='title');
       if(Object.hasOwn(input,'importance')) {if(!['high','normal','low'].includes(input.importance)) throw new I(400,'重要性无效');record.importance=input.importance;}
       if(Object.hasOwn(input,'due')) {
         const due=input.due;
