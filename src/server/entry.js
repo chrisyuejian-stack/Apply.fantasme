@@ -40,6 +40,8 @@ const worker = {
     return $t.fetch(request, {
       DB: env.APPLY_DB,
       FILES: env.FILES,
+      BOARD_V12_ENABLED: env.BOARD_V12_ENABLED,
+      ASSISTANT_BRIDGE_SECRET: env.ASSISTANT_BRIDGE_SECRET,
       ASSETS: applicationAssets(env),
       SETUP_KEY: env.APPLY_SETUP_KEY,
       PBKDF2_ITERATIONS: env.PBKDF2_ITERATIONS,
