@@ -1,8 +1,8 @@
 # 对接契约：枫琴助理（fengqin-assistant） ⇄ 申请系统（apply）
 
-版本 **v1.2（草案，待助理侧确认）**，2026-11-27。两个仓库的实现都以本文为准；改动须两边同时确认。
+版本 **v1.2（助理侧已审，待主人确认后实现）**，2026-11-27。两个仓库的实现都以本文为准；改动须两边同时确认。
 
-> **生效规则**：v1.2 在助理侧确认前**不得开始实现**，现行生效的仍是 v1.1。v1.2 对 v1.1 **向后兼容**：旧字段含义不变，只新增字段、一个状态值 `cancelled` 和一个接口（`POST /tasks/{externalId}/cancel`）；助理按 v1.1 实现的解析器必须容忍未知字段与新的 `status` 值。
+> **生效规则**：助理侧已审阅并同意三个决定（含下文三处修订）；**主人确认前不得开始实现，现行生效的仍是 v1.1**。实现后也**不能立即开启**，必须按文末「上线顺序」。v1.2 对 v1.1 **向后兼容**：旧字段含义不变，只新增字段、一个状态值 `cancelled` 和一个接口（`POST /tasks/{externalId}/cancel`）；助理按 v1.1 实现的解析器必须容忍未知字段与新的 `status` 值。
 > 变更记录：v1.1 增加「遇阻」状态与原因；**v1.2 增加公开任务板与认领、助理撤回（cancel）、主管删除以 `cancelled` 报告**。
 
 ## 谁负责什么（边界）
@@ -36,11 +36,21 @@
 请求：
 ```json
 { "externalId": "助理侧唯一 ID", "title": "≤120 字", "note": "≤2000 字，可写学生姓名等",
-  "importance": "high|normal|low", "due": "YYYY-MM-DD 或 null", "assignee": "顾问登录名；null 或不传 = 公开任务板" }
+  "importance": "high|normal|low", "due": "YYYY-MM-DD 或 null", "assignee": "顾问登录名；显式 null = 公开任务板；创建时省略也是公开；重推时省略 = 保持原样" }
 ```
-- 按 `externalId` **幂等**，且是**完整状态的 upsert**：首次创建；再次推送同一 `externalId` 时更新 `title/note/importance/due/assignee`，**不改变**状态（`blocked`/`done`/`cancelled` 不会被重推回退或复活）。助理每次推送都应带上想要的 `assignee`——**不传等于公开**，所以只想改标题时也要把原来的 `assignee` 一起带上。
-- `assignee` 有值时必须是有效的顾问或主管登录名，否则 `400 {"error":"负责人不存在"}`；`null`/不传表示**公开任务板**（见下文）。
+- `externalId` 必填，格式见下文「externalId 规则」。按 `externalId` **幂等**：首次创建；再次推送同一 `externalId` 时更新所带字段，**不改变**状态（`blocked`/`done`/`cancelled` 不会被重推回退或复活）。
+- **重推时「省略 = 保持原样」，对所有字段一致**（`title/note/importance/due/assignee`）：只改标题就只带 `title`，不会连带改变负责人。要清空 `due` 或 `note` 须显式传 `null`/空串。
+- **`assignee` 的三种写法**：
+  - 有值：必须是有效的顾问或主管登录名，否则 `400 {"error":"负责人不存在"}`；
+  - **显式 `null`：公开任务板**（见下文）；
+  - **省略**：**创建时 = 公开**；**重推时 = 保持原样**（指定的仍是指定，公开的仍是公开，认领不动）。
+- 创建时 `title` 必填；省略的 `importance` 取 `normal`，`note` 为空，`due` 为 `null`。
 - 响应：`200 {"id":"bt-…","status":"open|blocked|done|cancelled","created":true|false}`；对已 `cancelled` 的任务重推返回 `200` 且 `status:"cancelled"`、`created:false`，不做任何修改。
+
+### externalId 规则
+- 允许字符 `[A-Za-z0-9._:-]`，长度 **1–128**；不符合返回 `400 {"error":"externalId 格式无效"}`（`POST /tasks` 与 `/cancel` 路径均适用）。该字符集在 URL 路径中无需额外编码。
+- `externalId` 一经创建**永久属于那条任务**，包括 `done`/`cancelled` 之后；**不能复用**。
+- **撤回后想重新派**：用**新的 `externalId`**（建议在原 id 后加 `.2`、`.3`……），这是一条**全新任务**，与已撤回的旧任务无关（旧任务保持 `cancelled`、不复活）。
 
 ### 2. 拉取更新 `GET /updates?since=<ISO 时间>`
 - 返回 `since` 之后有状态或备注变化、且来源为助理的任务，按 `updatedAt` 升序，最多 200 条：
@@ -77,7 +87,7 @@
 - **助理侧切换**（通过重推）：仅限 `open`/`blocked` 的任务。
   - 指定顾问 → 公开：`visibility` 变 `board`，无认领人。
   - 公开（已认领或未认领）→ 指定顾问 X：`visibility` 变 `assigned`，认领自动清除。
-  - 公开 → 公开（`assignee` 仍为 `null`）：**不清除已有认领**（避免助理只改标题就清掉认领）。
+  - 公开 → 公开（重推时显式 `null` 或省略）：**不清除已有认领**。
   - 凡导致负责人变化的切换，若原状态为 `blocked`，状态同样重置为 `open` 并清空遇阻信息。
   - 已 `done`、已 `cancelled` 的重推不改变任何状态与归属（v1.1 已有）。
 
@@ -88,11 +98,17 @@
 只返回启用中的顾问与主管，不返回学生、文书老师、DIY 账号。
 
 ### 4. 助理撤回 `POST /tasks/{externalId}/cancel`（v1.2）
-- 只有助理能调用，同样的 HMAC 签名；**请求体为空**（签名里 `body` 为空字符串）。`externalId` 作为路径段做 URL 编码，签名使用**实际发出的路径**。
+- 只有助理能调用，同样的 HMAC 签名；**请求体为空**（签名里 `body` 为空字符串）。`externalId` 作为路径段，签名使用**实际发出的路径**。
 - 任务为 `open` 或 `blocked`：状态变 `cancelled`（终态），**从顾问和主管的列表里消失，数据保留**；在 `/updates` 里以 `status:"cancelled"`、`cancelledAt`、`cancelledBy:"assistant"` 再出现一次。响应 `200 {"id":"bt-…","status":"cancelled"}`。
 - 任务已 `done`：`409 {"error":"任务已完成，不能撤回"}`，状态不变。
 - 任务已 `cancelled`：`200 {"id":"bt-…","status":"cancelled"}`，**幂等**，不改变 `cancelledAt`/`cancelledBy`。
 - `externalId` 不存在：`404 {"error":"任务不存在"}`。
+
+## 上线顺序（v1.2，必须遵守）
+1. **助理侧先部署**：能识别 `status:"cancelled"` 与 `/updates` 新字段（`visibility`、`claimed*`、`cancelled*`）的版本，并容忍未知字段。助理侧部署完成后，**由主人告知申请系统一侧**。
+2. **申请系统一侧**：代码可以先部署，但 v1.2 的新行为由开关 `BOARD_V12_ENABLED`（Pages 变量，`1` 为开启，默认关闭）控制。**关闭时按 v1.1 行为**：`POST /tasks` 创建时必须带 `assignee`（省略/`null` → `400`）；`/cancel` 返回 `404`；`/updates` 不会出现 `cancelled`（主管删除按 v1.1 处理）；前端不显示公开任务板与认领。新增字段可始终返回（旧解析器会忽略）。
+3. **主人在助理确认已部署之后**，先在预览环境开启 `BOARD_V12_ENABLED=1` 联调，再在生产开启。**在助理确认已部署之前不要开启。**
+4. 开启之后，助理才可以开始发公开任务、调用 `/cancel`、处理 `cancelled` 与新字段。
 
 ## 不做的事
 - 不传输学生档案、文书或任何文件。
