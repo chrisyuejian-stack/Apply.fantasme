@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "test": "npm run build && node --test tests/*.test.mjs",
+    "test": "npm run build && node --test tests/*.test.mjs src/server/*.test.mjs tests/regression/*.test.mjs",
     "dev": "npm run build && node scripts/dev.mjs",
     "verify:baseline": "node scripts/verify-baseline.mjs",
     "bundle:hash": "npm run build && node scripts/bundle-hash.mjs",
