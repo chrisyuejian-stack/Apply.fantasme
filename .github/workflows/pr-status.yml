@@ -1,0 +1,55 @@
+name: PR Status
+
+# 每个 PR 维护一条置顶「状态评论」：风险、CI、红队/验收/批准是否齐全，以及下一步该谁做。
+# 只运行默认分支上的受信代码（pull_request_target / workflow_run），不执行 PR 里的代码。
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, labeled, unlabeled]
+  workflow_run:
+    workflows: ['Application tests']
+    types: [completed]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: pr-status-${{ github.event.pull_request.number || github.event.workflow_run.head_sha }}
+  cancel-in-progress: true
+
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const policy = require('./scripts/pr-policy.cjs');
+            const { owner, repo } = context.repo;
+            let prs = [];
+            if (context.eventName === 'pull_request_target') {
+              prs = [context.payload.pull_request];
+            } else {
+              prs = (context.payload.workflow_run.pull_requests || []).map(p => ({ number: p.number }));
+            }
+            for (const ref of prs) {
+              const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: ref.number });
+              if (pr.state !== 'open') continue;
+              const files = (await github.paginate(github.rest.pulls.listFiles, { owner, repo, pull_number: pr.number, per_page: 100 })).map(f => f.filename);
+              const labels = pr.labels.map(l => l.name);
+              const { data: runs } = await github.rest.checks.listForRef({ owner, repo, ref: pr.head.sha, check_name: 'test' });
+              const latest = runs.check_runs.sort((a, b) => new Date(b.started_at) - new Date(a.started_at))[0];
+              const ciConclusion = latest && latest.status === 'completed' ? latest.conclusion : undefined;
+              const body = policy.statusComment({ draft: pr.draft, labels, files, ciConclusion, mergeableState: pr.mergeable_state });
+              const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: pr.number, per_page: 100 });
+              const mine = comments.find(c => c.body && c.body.startsWith('<!-- fq-pr-status -->'));
+              if (mine) {
+                if (mine.body !== body) await github.rest.issues.updateComment({ owner, repo, comment_id: mine.id, body });
+              } else {
+                await github.rest.issues.createComment({ owner, repo, issue_number: pr.number, body });
+              }
+            }
