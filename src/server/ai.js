@@ -717,31 +717,70 @@ function fqaiSafeUrl(u) {
     return x.toString().slice(0, 2000);
   } catch (_) { return ''; }
 }
+const FQAI_COMMON_QUERY_WORDS = new Set([
+  'may', 'june', 'july', 'march', 'april', 'fall', 'spring', 'winter', 'summer',
+  'violin', 'viola', 'cello', 'piano', 'voice', 'vocal', 'opera', 'flute', 'oboe',
+  'clarinet', 'bassoon', 'trumpet', 'horn', 'trombone', 'tuba', 'harp', 'guitar',
+  'percussion', 'composition', 'conducting', 'music', 'arts', 'college', 'school',
+  'university', 'academy', 'conservatory', 'institute', 'audition', 'deadline', 'entry',
+]);
+const FQAI_ZH_DOMAIN_TERMS = [
+  '小提琴', '中提琴', '大提琴', '低音提琴', '钢琴', '声乐', '歌剧', '作曲', '指挥',
+  '管弦乐', '打击乐', '长笛', '单簧管', '双簧管', '巴松', '圆号', '小号', '长号', '大号',
+  '竖琴', '吉他', '萨克斯', '室内乐', '音乐学院', '艺术学院', '交响乐团', '音乐学', '音乐教育',
+  '预审', '录像', '面试', '奖学金', '截止日期', '截止', '本科', '研究生',
+];
 function fqaiSchoolWordSet(idx) {
   if (!idx) return new Set();
   if (idx._words) return idx._words;
-  const set = new Set();
+  const set = new Set(FQAI_COMMON_QUERY_WORDS);
   for (const s of idx.schools || []) {
     for (const part of String([s.abbr, s.en, s.city_en].filter(Boolean).join(' ')).toLowerCase().match(/[a-z]{2,}/g) || []) set.add(part);
   }
   idx._words = set;
   return set;
 }
+function fqaiZhDomainTerms(idx) {
+  if (idx?._zhTerms) return idx._zhTerms;
+  const set = new Set(FQAI_ZH_DOMAIN_TERMS);
+  if (idx) {
+    for (const s of idx.schools || []) {
+      for (const m of String(s.zh || '').match(/[\u4e00-\u9fa5]{2,}/g) || []) set.add(m);
+    }
+    const tax = idx.tax || {};
+    for (const arr of [tax.majors, tax.cats, tax.levels, tax.stages]) {
+      for (const x of arr || []) {
+        for (const m of String(x?.zh || '').match(/[\u4e00-\u9fa5]{2,}/g) || []) set.add(m);
+      }
+    }
+    idx._zhTerms = [...set].sort((a, b) => b.length - a.length);
+    return idx._zhTerms;
+  }
+  return [...set].sort((a, b) => b.length - a.length);
+}
 function fqaiStudentBlock(s, idx) {
   if (!s) return [];
   const p = s.profile || {};
   const schoolWords = fqaiSchoolWordSet(idx);
   const out = new Set();
-  const addFull = v => { const t = String(v || '').trim(); if (t.length >= 2) out.add(t); };
+  const addFull = v => {
+    const t = String(v || '').trim();
+    if (t.length < 2) return;
+    if (/^[A-Za-z0-9\s.,'’"-]+$/.test(t)) {
+      const words = t.toLowerCase().match(/[a-z]{2,}/g) || [];
+      if (words.length && words.every(w => schoolWords.has(w))) return;
+    }
+    out.add(t);
+  };
   addFull(s.name); addFull(s.englishName); addFull(p.nameEn);
   addFull(p.nickname); addFull(p.preferredName); addFull(p.commonName); addFull(p.alias);
   for (const g of p.guardians || []) addFull(g?.name);
   const zh = String(s.name || '').trim();
-  if (/^[\u4e00-\u9fa5]{2,4}$/.test(zh)) {
+  if (/^[\u4e00-\u9fa5]{2,4}$/.test(zh) && !/同学$/.test(zh)) {
     const ch = zh[0];
     out.add(ch + '同学'); out.add('小' + ch); out.add(ch + '家长');
   }
-  for (const full of [s.englishName, p.nameEn, p.nickname, p.preferredName]) {
+  for (const full of [s.englishName, p.nameEn, p.nickname, p.preferredName, p.commonName, p.alias]) {
     for (const part of String(full || '').trim().split(/[\s,]+/)) {
       const clean = part.replace(/^['"()-]+|['"()-]+$/g, '');
       if (/^[A-Za-z]{3,}$/.test(clean) && !schoolWords.has(clean.toLowerCase())) out.add(clean);
@@ -750,23 +789,94 @@ function fqaiStudentBlock(s, idx) {
   return [...out];
 }
 const fqaiEscapeRe = s => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function fqaiDecodeLoop(str) {
+  let s = String(str || '');
+  for (let i = 0; i < 4; i++) {
+    if (!/%[0-9A-Fa-f]{2}/.test(s)) break;
+    let next = s;
+    try { next = decodeURIComponent(s.replace(/%(?![0-9A-Fa-f]{2})/g, '%25')); } catch (_) {
+      next = s.replace(/%(?:[0-9A-Fa-f]{2})/g, m => { try { return decodeURIComponent(m); } catch (_) { return m; } });
+    }
+    if (next === s) break;
+    s = next;
+  }
+  return s;
+}
+function fqaiNormalizePiiText(text) {
+  return fqaiDecodeLoop(String(text || ''))
+    .normalize('NFKC')
+    .replace(/[\u200B-\u200D\uFEFF\u2060\u00AD]/g, '')
+    .replace(/[\r\n\t]+/g, ' ');
+}
+function fqaiScrubContact(text) {
+  let s = fqaiNormalizePiiText(text);
+  // 先清邮箱与证件号
+  s = s.replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, ' ')
+    .replace(/\b[A-Z]{1,2}\d{7,9}\b/gi, ' ');
+  // 保护日期与学年不被拆号正则误吞
+  const kept = [];
+  s = s.replace(/\b(?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2}\b|\b(?:19|20)\d{2}(?:\s*[-–—/]\s*|\s+)(?:19|20)\d{2}\b/g, m => {
+    const tok = `\uE000D${kept.length}\uE001`;
+    kept.push(m);
+    return tok;
+  });
+  s = s
+    .replace(/(?:\+|00)\d{1,3}[\s.\-–—()]*\d(?:[\s.\-–—()]*\d){5,14}/g, ' ')
+    .replace(/(?<!\d)\d(?:[\s.\-–—()]*\d){6,14}(?!\d)/g, m => m.replace(/\D/g, '').length >= 7 ? ' ' : m);
+  return s.replace(/\uE000D(\d+)\uE001/g, (_, i) => kept[Number(i)]);
+}
+function fqaiZhBlockRe(term) {
+  const chars = [...term];
+  return new RegExp(chars.map(fqaiEscapeRe).join('[\\s\\u200B-\\u200D\\uFEFF·._\\-/]*'), 'g');
+}
+function fqaiProtectedRanges(str, zhTerms) {
+  const ranges = [];
+  for (const term of zhTerms) {
+    let from = 0;
+    while (true) {
+      const at = str.indexOf(term, from);
+      if (at < 0) break;
+      ranges.push([at, at + term.length, term]);
+      from = at + 1;
+    }
+  }
+  return ranges;
+}
+function fqaiReplaceBlocks(str, blockList, idx) {
+  let s = str;
+  const zhTerms = fqaiZhDomainTerms(idx);
+  const blocks = [...new Set((blockList || []).map(x => String(x || '').trim()).filter(x => x.length >= 2))].sort((a, b) => b.length - a.length);
+  for (const n of blocks) {
+    if (/^[\x00-\x7f]+$/.test(n)) {
+      const re = new RegExp('(?<![A-Za-z0-9])' + fqaiEscapeRe(n) + "(?:'s|’s)?(?![A-Za-z0-9])", 'gi');
+      s = s.replace(re, ' ');
+    } else if (/^[\u4e00-\u9fa5]{2,}$/.test(n)) {
+      const ranges = fqaiProtectedRanges(s, zhTerms);
+      const re = fqaiZhBlockRe(n);
+      s = s.replace(re, (m, offset) => {
+        const end = offset + m.length;
+        const inProtected = ranges.some(([rs, reIdx, term]) => offset >= rs && end <= reIdx && term !== n);
+        return inProtected ? m : ' ';
+      });
+    } else {
+      const re = new RegExp(fqaiEscapeRe(n), 'gi');
+      s = s.replace(re, ' ');
+    }
+  }
+  return s;
+}
+function fqaiUrlHasPii(W, rawUrl) {
+  const norm = fqaiNormalizePiiText(rawUrl);
+  if (/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/.test(norm)) return true;
+  if (/(?:\+|00)?86[\s.\-–—()]*1[3-9]\d(?:[\s.\-–—()]*\d){8}/.test(norm) || /(?<!\d)1[3-9]\d(?:[\s.\-–—()]*\d){8}(?!\d)/.test(norm)) return true;
+  if (/\b[A-Z]{1,2}\d{7,9}\b/i.test(norm)) return true;
+  const after = fqaiReplaceBlocks(norm, W?.block || [], W?.idx);
+  return after !== norm;
+}
 // 检索词清洗：学生个人信息不出系统
 function fqaiWebQuery(W, q) {
-  let s = String(q || '').replace(/[\r\n\t]+/g, ' ');
-  // 先清邮箱、证件号与电话，再清姓名，避免 "alice@example.com" 变 "@example.com" 或 "E12345678" 剩 "E"
-  s = s.replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, ' ')
-    .replace(/\b[A-Z]{1,2}\d{7,9}\b/gi, ' ')
-    .replace(/(?:\+|00)\d{1,3}[\s-]*(?:1[3-9]\d(?:[\s-]\d{4}){2}|0?\d{2,3}[\s-]\d{7,8}|\(?\d{2,4}\)?[\s-]\d{3,4}[\s-]\d{4}|\d{7,11})\b/g, ' ')
-    .replace(/\b1[3-9]\d(?:[\s-]\d{4}){2}\b/g, ' ')
-    .replace(/\b0\d{2,3}[\s-]\d{7,8}\b/g, ' ')
-    .replace(/(?<!\d)\(?\d{3}\)?[\s-]\d{3}[\s-]\d{4}\b/g, ' ')
-    .replace(/(?<![\d-])\d{7,}(?![\d-])/g, ' ');
-  const blocks = [...new Set((W.block || []).map(x => String(x || '').trim()).filter(x => x.length >= 2))].sort((a, b) => b.length - a.length);
-  for (const n of blocks) {
-    const esc = fqaiEscapeRe(n);
-    const re = /^[\x00-\x7f]+$/.test(n) ? new RegExp('(?<![A-Za-z0-9])' + esc + "(?:'s|’s)?(?![A-Za-z0-9])", 'gi') : new RegExp(esc, 'gi');
-    s = s.replace(re, ' ');
-  }
+  let s = fqaiScrubContact(q);
+  s = fqaiReplaceBlocks(s, W.block || [], W.idx);
   s = s.replace(/(?:小)?[\u4e00-\u9fa5]{1,3}(?:同学|家长|爸爸|妈妈|父母|父亲|母亲)/g, ' ')
     .replace(/\s+/g, ' ').trim();
   return [...s].slice(0, 110).join('');
@@ -868,6 +978,10 @@ async function fqaiWebOpen(W, args = {}) {
   let url = args.ref ? W.sources.find(s => s.ref === String(args.ref).trim())?.url : '';
   url = fqaiSafeUrl(url || args.url);
   if (!url) return { error: '网址无效' };
+  if (fqaiUrlHasPii(W, url)) {
+    W.log.push({ type: 'open', url: '[blocked]', ok: false, error: 'blocked-pii' });
+    return { error: '网址包含学生个人信息，已拒绝打开' };
+  }
   const s = fqaiWebSource(W, url);
   const kw = [...new Set([...fqaiKeywords({}, String(args.focus || '')), ...W.keywords])];
   if (W.pages.has(url)) return { ref: s.ref, url, title: s.title, source: FQAI_SRC_ZH[s.kind], text: fqaiPickText(W.pages.get(url).text, kw, 12000) };

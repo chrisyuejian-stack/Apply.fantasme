@@ -186,3 +186,148 @@ test('#86 P1+P5: chat and audit web search scrub case-insensitive names, nicknam
     h.db.close();
   }
 });
+
+test('#96 (#92 red-team probes): NFKC/spaced/dot/dash/zero-width phones, fullwidth @, split/URL names, open_page PII block, and school-word preservation', async () => {
+  const h = await createWorkerHarness({ DEEPSEEK_API_KEY: 'synthetic-offline-hook-key', AI_WEB: 'on' });
+  const prevModel = globalThis.__fqaiModelHook;
+  const prevWeb = globalThis.__fqaiWebHook;
+  try {
+    const setup = await h.call('/api/setup', {
+      method: 'POST',
+      body: { setupKey: h.env.APPLY_SETUP_KEY, name: '主管', username: 'sup', password: 'Supervisor2026', demo: false },
+    });
+    assert.equal(setup.status, 200);
+    const sup = extractCookie(setup.headers);
+
+    const head = {
+      exportedAt: '2026-11-27',
+      taxonomy: { majors: [{ id: 'violin', zh: '小提琴' }], cats: [{ id: 'audition', zh: '考试' }], levels: [{ id: 'UG', zh: '本科' }], stages: [] },
+      schools: [{ id: 'jhu', abbr: 'Peabody', zh: '皮博迪音乐学院', en: 'Peabody Institute Johns Hopkins', country: 'US', city_en: 'Baltimore', web: 'https://peabody.jhu.edu', cycle: 'Fall 2027', offers: { UG: ['violin'] }, deadlines: [] }],
+    };
+    h.db.raw.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)').run('reqdb:head', JSON.stringify(head));
+    h.db.raw.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)').run('reqdb:school:jhu', JSON.stringify([
+      { id: 'jhu-ug-audition', school: 'jhu', country: 'US', level: 'UG', majors: ['violin'], cat: 'audition', prog: 'BM Violin', zh: '需预审录像', src: ['https://peabody.jhu.edu/audition'] },
+    ]));
+
+    // Student with evasive encodings + student whose names collide with school/month/instrument terms
+    assert.equal((await h.call('/api/t/students/stu-rt-1', {
+      method: 'PUT',
+      cookie: sup,
+      body: {
+        id: 'stu-rt-1',
+        name: '林测试',
+        englishName: 'Amy Chen',
+        status: 'active',
+        level: 'UG',
+        majorId: 'violin',
+        season: 'Fall 2027',
+      },
+    })).status, 200);
+
+    assert.equal((await h.call('/api/t/students/stu-rt-2', {
+      method: 'PUT',
+      cookie: sup,
+      body: {
+        id: 'stu-rt-2',
+        name: '小提',
+        englishName: 'Peabody',
+        status: 'active',
+        level: 'UG',
+        majorId: 'violin',
+        season: 'Fall 2027',
+        profile: { nickname: 'Hopkins', preferredName: 'May' },
+      },
+    })).status, 200);
+
+    const searches = [];
+    const fetchedUrls = [];
+    globalThis.__fqaiWebHook = async (kind, body) => {
+      if (kind === 'search') {
+        searches.push(body.query);
+        return { ok: true, data: { results: [] } };
+      }
+      if (kind === 'fetch') {
+        fetchedUrls.push(body.url);
+        return { ok: true, data: { title: 'Peabody Audition', content: 'Pre-screening deadlines in May 2027 for Peabody violin applicants. '.repeat(4) } };
+      }
+      return { ok: false, status: 404 };
+    };
+
+    const probeQueries = [
+      '1 3 8 0 0 0 0 1 1 1 1 １３８００００１１１１ ＋８６　１３８００００１１１１ Peabody 2026-12-01',
+      '138－0000－1111 138.0000.1111 138\u200b00001111 secret＠school.edu Hopkins 2026-2027',
+      '林 测试 林\u200b测试 %E6%9E%97%E6%B5%8B%E8%AF%95 Amy%20Chen Peabody violin',
+      'Peabody Hopkins May violin 小提琴 预审 2027',
+    ];
+    let step = 0;
+    const toolOutputs = [];
+    const seenToolIds = new Set();
+    globalThis.__fqaiModelHook = async (_cfg, body) => {
+      for (const m of body.messages || []) {
+        if (m?.role === 'tool' && !seenToolIds.has(m.tool_call_id)) {
+          seenToolIds.add(m.tool_call_id);
+          toolOutputs.push(m.content);
+        }
+      }
+      if (step < probeQueries.length) {
+        const q = probeQueries[step++];
+        return {
+          choices: [{
+            message: {
+              role: 'assistant',
+              content: '',
+              tool_calls: [{ id: `s_${step}`, type: 'function', function: { name: 'web_search', arguments: JSON.stringify({ query: q }) } }],
+            },
+          }],
+        };
+      }
+      if (step === probeQueries.length) {
+        step++;
+        return {
+          choices: [{
+            message: {
+              role: 'assistant',
+              content: '',
+              tool_calls: [
+                { id: 'o_pii_1', type: 'function', function: { name: 'open_page', arguments: JSON.stringify({ url: 'https://example.edu/lookup?name=Amy%20Chen&tel=13800001111' }) } },
+                { id: 'o_pii_2', type: 'function', function: { name: 'open_page', arguments: JSON.stringify({ url: 'https://example.edu/s/%E6%9E%97%E6%B5%8B%E8%AF%95' }) } },
+                { id: 'o_ok', type: 'function', function: { name: 'open_page', arguments: JSON.stringify({ url: 'https://peabody.jhu.edu/audition?term=may-2027' }) } },
+              ],
+            },
+          }],
+        };
+      }
+      return { choices: [{ message: { role: 'assistant', content: '探测完成' } }] };
+    };
+
+    const res = await h.call('/api/ai/chat', {
+      method: 'POST',
+      cookie: sup,
+      body: { message: '请查 Peabody 小提琴预审', web: true, history: [] },
+    });
+    assert.equal(res.status, 200);
+    assert.doesNotMatch(res.text, /"type":"error"/, res.text);
+
+    assert.equal(searches.length, 4);
+    assert.doesNotMatch(searches[0], /138|0000|1111|86/);
+    assert.match(searches[0], /Peabody 2026-12-01/);
+    assert.doesNotMatch(searches[1], /138|0000|1111|secret|school\.edu/i);
+    assert.match(searches[1], /Hopkins 2026-2027/);
+    assert.doesNotMatch(searches[2], /林|测试|Amy|Chen|%E6|%20/i);
+    assert.match(searches[2], /Peabody violin/);
+    // Item 4: Peabody / Hopkins / May / 小提琴 must NOT be destroyed by stu-rt-2's colliding names
+    assert.equal(searches[3], 'Peabody Hopkins May violin 小提琴 预审 2027');
+
+    // Item 3: PII open_page URLs rejected before fetch & page cache; clean school URL succeeds
+    assert.deepEqual(fetchedUrls, ['https://peabody.jhu.edu/audition?term=may-2027']);
+    const piiToolRejects = toolOutputs.filter(t => t.includes('网址包含学生个人信息，已拒绝打开'));
+    assert.equal(piiToolRejects.length, 2);
+    const cachedUrls = h.db.raw.prepare('SELECT url FROM fq_ai_page_cache').all().map(r => r.url);
+    assert.ok(!cachedUrls.some(u => u.includes('Amy') || u.includes('1380000') || u.includes('%E6')));
+    assert.ok(cachedUrls.includes('https://peabody.jhu.edu/audition?term=may-2027'));
+  } finally {
+    globalThis.__fqaiModelHook = prevModel;
+    globalThis.__fqaiWebHook = prevWeb;
+    h.db.close();
+  }
+});
