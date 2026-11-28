@@ -220,7 +220,7 @@
     const w = status?.web !== false;
     foot.innerHTML = `<label class="fqai-mode">模型<select data-sel="mode"><option value="flash" ${mode !== 'pro' ? 'selected' : ''}>自动 · Flash</option><option value="pro" ${mode === 'pro' ? 'selected' : ''}>Pro</option></select></label>
       <label class="fqai-webt" title="${w ? '体检、提交前检查和提问时，允许 AI 搜索并阅读学校官网；检索词不含学生个人信息' : '服务器已关闭联网检索（AI_WEB=off）'}"><input type="checkbox" data-sel="web" ${webOn() ? 'checked' : ''} ${w ? '' : 'disabled'}>${ICON.globe}联网</label>
-      <span>${u ? `今日 ${u.used}${u.limit ? '/' + u.limit : ''} 次${w && u.webLimit ? ` · 联网 ${u.web || 0}/${u.webLimit}` : ''}` : ''} · 发给 AI 的学生信息已去除证件号、手机号、邮箱、住址与生日</span>`;
+      <span>${u ? `今日 ${u.used}${u.limit ? '/' + u.limit : ''} 次${w && u.webLimit ? ` · 联网 ${u.web || 0}/${u.webLimit}` : ''}` : ''} · 发给 AI 的上下文仅含申请进度与学业/曲目要点（含已裁剪的动态/粘贴文本与该生相关员工；已去除监护人、证件号、手机号、邮箱、住址与生日；联网检索不含姓名）</span>`;
   }
   function renderAll() {
     if (!status?.enabled) {

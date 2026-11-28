@@ -21,7 +21,9 @@ function fqaiConfig(env) {
     webBase: String(env.AI_WEB_BASE || 'https://api.deepseek.com').replace(/\/+$/, ''),
     dailyWeb: num(env.AI_DAILY_WEB, 300),
     // 删除任务的建议规则：strict（默认：只建议删除 AI 新建或确认重复、尚未开始的任务，其余改为“不适用”）/ any / off
-    deletePolicy: ['strict', 'any', 'off'].includes(String(env.AI_DELETE || '').toLowerCase()) ? String(env.AI_DELETE).toLowerCase() : 'strict'
+    deletePolicy: ['strict', 'any', 'off'].includes(String(env.AI_DELETE || '').toLowerCase()) ? String(env.AI_DELETE).toLowerCase() : 'strict',
+    logRetentionDays: num(env.AI_LOG_RETENTION_DAYS, 90),
+    cacheRetentionDays: num(env.AI_CACHE_RETENTION_DAYS, 7)
   };
 }
 // 顾问在界面上选“Pro”时，本次请求的对话与核实都改用 Pro 模型，并计入 Pro 每日用量
@@ -95,10 +97,34 @@ async function fqaiTake(db, user, kind, limit) {
   if ((await fqaiUsage(db, user, kind)) >= limit) throw new FqaiError(429, { verify: `今日联网核实已达上限（${limit} 次）`, web: `今日联网检索已达上限（${limit} 次）`, essay: `今日文书助手已达上限（${limit} 次）`, pro: `今日 Pro 模型已达上限（${limit} 次），请切回“自动 · Flash”` }[kind] || `今日 AI 使用已达上限（${limit} 次）`);
   await db.prepare('INSERT INTO fq_ai_usage (day, user_id, kind, n) VALUES (?,?,?,1) ON CONFLICT(day, user_id, kind) DO UPDATE SET n = n + 1').bind(fqaiDay(), user.id, kind).run();
 }
+async function fqaiDigest(text) {
+  const s = String(text || '');
+  if (!s) return '';
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
+  const hex = Array.from(new Uint8Array(buf), b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
+  return `len=${[...s].length} sha256=${hex}`;
+}
+const fqaiPrunedAt = new WeakMap();
+async function fqaiPrune(db, cfg, opt = {}) {
+  const now = Number.isFinite(opt.now) ? opt.now : Date.now();
+  const prev = fqaiPrunedAt.get(db) || 0;
+  if (!opt.force && now - prev < 1800e3) return;
+  fqaiPrunedAt.set(db, now);
+  try {
+    const stmts = [];
+    const logDays = cfg?.logRetentionDays ?? 90;
+    const cacheDays = cfg?.cacheRetentionDays ?? 7;
+    if (logDays > 0) stmts.push(db.prepare('DELETE FROM fq_ai_log WHERE at < ?').bind(new Date(now - logDays * 86400e3).toISOString()));
+    if (cacheDays > 0) stmts.push(db.prepare('DELETE FROM fq_ai_page_cache WHERE fetched_at < ?').bind(now - cacheDays * 86400e3));
+    if (stmts.length) await db.batch(stmts);
+  } catch (_) { fqaiPrunedAt.delete(db); }
+}
 async function fqaiLog(db, entry) {
   try {
+    let q = String(entry.question || '');
+    if (entry.kind === 'chat' && q && !/^len=\d+ sha256=[a-f0-9]+$/.test(q)) q = await fqaiDigest(q);
     await db.prepare('INSERT INTO fq_ai_log (at, user_id, kind, question, tools, tokens_in, tokens_out, ms, ok, detail) VALUES (?,?,?,?,?,?,?,?,?,?)')
-      .bind(new Date().toISOString(), entry.user || '', entry.kind || '', String(entry.question || '').slice(0, 1000), JSON.stringify(entry.tools || []).slice(0, 2000),
+      .bind(new Date().toISOString(), entry.user || '', entry.kind || '', q.slice(0, 1000), JSON.stringify(entry.tools || []).slice(0, 2000),
         entry.tokensIn || 0, entry.tokensOut || 0, entry.ms || 0, entry.ok ? 1 : 0, String(entry.detail || '').slice(0, 1000)).run();
   } catch (_) {}
 }
@@ -425,7 +451,7 @@ function fqaiKeywords(r, question) {
 }
 async function fqaiVerify(env, cfg, db, idx, id, question, emit) {
   const r = idx.recById.get(String(id || ''));
-  if (!r) throw new FqaiError(404, '库内没有这个条目 ID：' + id);
+  if (!r) throw new FqaiError(404, '库内没有这个条目');
   const urls = [...new Set((r.src || []).filter(u => /^https?:\/\//i.test(u)))].slice(0, 4);
   if (!urls.length && !(cfg.web && cfg.apiKey)) throw new FqaiError(400, '该条目没有登记官网来源链接，无法联网核实');
   if (urls.length) emit && emit({ type: 'status', text: `正在读取 ${urls.length} 个官网来源页面…` });
@@ -659,9 +685,11 @@ async function fqaiChat(env, cfg, db, user, body, emit, deps) {
     });
     const sources = W ? W.sources.filter(s => citedWeb.has(s.ref) || s.opened).map(s => ({ ref: s.ref, url: s.url, title: s.title || s.host, kind: s.kind, opened: s.opened, date: s.date || '', cited: citedWeb.has(s.ref) })) : [];
     emit({ type: 'answer', text: answer, records: cited.map(id => fqaiRecMeta(idx, idx.recById.get(id))), sources, web: W ? { searches: W.searches, opens: W.opens } : null, dataset: { exportedAt: idx.head.exportedAt || '', schools: idx.schools.length, records: idx.records.length } });
-    await fqaiLog(db, { user: user.id, kind: 'chat', question, tools: used, tokensIn: ctx.tokensIn, tokensOut: ctx.tokensOut, ms: Date.now() - t0, ok: true, detail: W ? `web: ${W.searches} 搜索 / ${W.opens} 网页` : '' });
+    const qDigest = await fqaiDigest(question);
+    await fqaiLog(db, { user: user.id, kind: 'chat', question: qDigest, tools: used, tokensIn: ctx.tokensIn, tokensOut: ctx.tokensOut, ms: Date.now() - t0, ok: true, detail: W ? `web: ${W.searches} 搜索 / ${W.opens} 网页` : '' });
   } catch (e) {
-    await fqaiLog(db, { user: user.id, kind: 'chat', question, tools: used, tokensIn: ctx.tokensIn, tokensOut: ctx.tokensOut, ms: Date.now() - t0, ok: false, detail: e.message });
+    const qDigest = await fqaiDigest(question);
+    await fqaiLog(db, { user: user.id, kind: 'chat', question: qDigest, tools: used, tokensIn: ctx.tokensIn, tokensOut: ctx.tokensOut, ms: Date.now() - t0, ok: false, detail: e.message });
     throw e;
   }
 }
@@ -842,25 +870,25 @@ function fqaiProtectedRanges(str, zhTerms) {
   }
   return ranges;
 }
-function fqaiReplaceBlocks(str, blockList, idx) {
+function fqaiReplaceBlocks(str, blockList, idx, repl = ' ') {
   let s = str;
   const zhTerms = fqaiZhDomainTerms(idx);
   const blocks = [...new Set((blockList || []).map(x => String(x || '').trim()).filter(x => x.length >= 2))].sort((a, b) => b.length - a.length);
   for (const n of blocks) {
     if (/^[\x00-\x7f]+$/.test(n)) {
       const re = new RegExp('(?<![A-Za-z0-9])' + fqaiEscapeRe(n) + "(?:'s|’s)?(?![A-Za-z0-9])", 'gi');
-      s = s.replace(re, ' ');
+      s = s.replace(re, repl);
     } else if (/^[\u4e00-\u9fa5]{2,}$/.test(n)) {
       const ranges = fqaiProtectedRanges(s, zhTerms);
       const re = fqaiZhBlockRe(n);
       s = s.replace(re, (m, offset) => {
         const end = offset + m.length;
         const inProtected = ranges.some(([rs, reIdx, term]) => offset >= rs && end <= reIdx && term !== n);
-        return inProtected ? m : ' ';
+        return inProtected ? m : repl;
       });
     } else {
       const re = new RegExp(fqaiEscapeRe(n), 'gi');
-      s = s.replace(re, ' ');
+      s = s.replace(re, repl);
     }
   }
   return s;
@@ -880,6 +908,24 @@ function fqaiWebQuery(W, q) {
   s = s.replace(/(?:小)?[\u4e00-\u9fa5]{1,3}(?:同学|家长|爸爸|妈妈|父母|父亲|母亲)/g, ' ')
     .replace(/\s+/g, ' ').trim();
   return [...s].slice(0, 110).join('');
+}
+function fqaiScrubText(text, block = []) {
+  if (!String(text || '')) return '';
+  let s = fqaiNormalizePiiText(text);
+  s = s.replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, '[邮箱已隐藏]')
+    .replace(/\b[A-Z]{1,2}\d{7,9}\b/gi, '[证件号已隐藏]')
+    .replace(/(?<![\d-])\d{15,18}[0-9Xx]?(?![\d-])/g, '[证件号已隐藏]');
+  const kept = [];
+  s = s.replace(/\b(?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2}\b|\b(?:19|20)\d{2}(?:\s*[-–—/]\s*|\s+)(?:19|20)\d{2}\b/g, m => {
+    const tok = `\uE000D${kept.length}\uE001`;
+    kept.push(m);
+    return tok;
+  });
+  s = s
+    .replace(/(?:\+|00)\d{1,3}[\s.\-–—()]*\d(?:[\s.\-–—()]*\d){5,14}/g, '[电话已隐藏]')
+    .replace(/(?<!\d)\d(?:[\s.\-–—()]*\d){6,14}(?!\d)/g, m => m.replace(/\D/g, '').length >= 7 ? '[电话已隐藏]' : m);
+  s = s.replace(/\uE000D(\d+)\uE001/g, (_, i) => kept[Number(i)]);
+  return fqaiReplaceBlocks(s, block, null, '[已隐藏]');
 }
 const fqaiMdPlain = t => String(t || '').replace(/!\[[^\]]*\]\([^)]*\)/g, ' ').replace(/\[([^\]]*)\]\((?:[^)(]|\([^)]*\))*\)/g, '$1').replace(/<[^>]+>/g, ' ').replace(/(^|\n)\s{0,3}[#>]+\s*/g, '$1').replace(/[*_`~|]{1,}/g, ' ').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
 
@@ -1139,24 +1185,34 @@ async function fqaiScope(data, user) {
   return { byId, visible: new Set(visible), manage: new Set(manage) };
 }
 
-/* ---------- 学生信息脱敏：只挑选申请需要的字段（白名单），不发送证件、电话、邮箱、住址、生日、账号 ---------- */
-function fqaiPublicStudent(s, withAnswers) {
+/* ---------- 学生信息脱敏：只挑选申请需要的字段（白名单），不发送监护人、证件、电话、邮箱、住址、生日、账号 ---------- */
+function fqaiPublicStudent(s, opt = {}) {
+  const withAnswers = typeof opt === 'boolean' ? opt : !!opt?.answers;
+  const minimal = typeof opt === 'object' && !!opt?.minimal;
+  const block = (typeof opt === 'object' && opt?.block) || [];
   const p = s.profile || {};
   const keep = (list, keys) => (list || []).filter(fqaiNonEmpty).map(x => Object.fromEntries(keys.filter(k => x[k]).map(k => [k, x[k]])));
+  const tests = keep(p.tests, ['type', 'date', 'overall', 'subs', 'min']);
+  const otherTests = fqaiScrubText([p.otherTests, p.otherTestsScore].filter(Boolean).join(' · '), block);
+  if (minimal) {
+    return {
+      id: s.id, name: s.name, englishName: s.englishName || p.nameEn || '', season: s.season || '', level: s.level || '', major: s.majorId || '', status: s.status || '',
+      tests, otherTests
+    };
+  }
   const out = {
     id: s.id, name: s.name, englishName: s.englishName || p.nameEn || '', season: s.season || '', level: s.level || '', major: s.majorId || '', status: s.status || '',
     currentSchool: s.currentSchool || '',
     education: keep(p.education, ['stage', 'schoolZh', 'schoolEn', 'type', 'period']),
     gpa: p.gpa ? `${p.gpa}${p.gpaScale ? '（' + p.gpaScale + '）' : ''}` : '',
-    tests: keep(p.tests, ['type', 'date', 'overall', 'subs', 'min']),
-    otherTests: [p.otherTests, p.otherTestsScore].filter(Boolean).join(' · '),
-    testNote: p.testNote || '',
+    tests,
+    otherTests,
+    testNote: fqaiScrubText(fqaiCut(p.testNote || '', 300), block),
     activities: keep(p.activities, ['period', 'name', 'role']),
     awards: keep(p.awards, ['date', 'name', 'org']),
-    abilities: p.abilities || '',
-    guardians: (p.guardians || []).filter(g => g && g.name).map(g => ({ name: g.name, relation: g.relation || '' }))
+    abilities: fqaiScrubText(fqaiCut(p.abilities || '', 400), block)
   };
-  if (withAnswers) out.answers = Object.fromEntries(['q1', 'q2', 'q3', 'q4', 'q5', 'q6', 'q7'].filter(k => p[k]).map(k => [k, fqaiCut(p[k], 600)]));
+  if (withAnswers) out.answers = Object.fromEntries(['q1', 'q2', 'q3', 'q4', 'q5', 'q6', 'q7'].filter(k => p[k]).map(k => [k, fqaiScrubText(fqaiCut(p[k], 500), block)]));
   return out;
 }
 
@@ -1197,19 +1253,21 @@ function fqaiContext(B, idx, staff, today, opt = {}) {
   const anchor = (date, what) => { if (!fqaiIso(date)) return null; const id = 'D' + (anchors.size + 1); anchors.set(id, date); keyDates.push({ id, date, what, daysLeft: fqaiDays(date, today) }); return id; };
   const name = id => staff.find(u => u.id === id)?.name || '';
   const s = B.student;
+  const block = fqaiStudentBlock(s, idx);
+  const action = opt.action || '';
   const tests = (s.profile?.tests || []).filter(fqaiNonEmpty);
-  refs.set('student:tests', '学生档案：' + (tests.map(t => `${t.type} ${t.overall || ''}${t.subs ? '（' + t.subs + '）' : ''}${t.date ? ' · ' + t.date : ''}`).join('；') || '无语言成绩') + (s.profile?.testNote ? ' · ' + s.profile.testNote : ''));
+  refs.set('student:tests', '学生档案：' + (tests.map(t => `${t.type} ${t.overall || ''}${t.subs ? '（' + t.subs + '）' : ''}${t.date ? ' · ' + t.date : ''}`).join('；') || '无语言成绩') + (s.profile?.testNote ? ' · ' + fqaiCut(fqaiScrubText(s.profile.testNote, block), 120) : ''));
   const apps = B.applications.filter(a => !a.withdrawn).map(a => {
     const sch = fqaiSchoolOf(idx, a); const lab = fqaiSchoolLabel(idx, a);
     refs.set('app:' + a.id, `申请：${lab} ${a.program || ''}`);
     const parts = (a.parts || []).map(p => {
       const sub = B.sub(p.submissionId); const d = p.deadline?.date || '';
       refs.set('sub:' + p.submissionId, `提交：${fqaiPlatform(sub)} · ${FQAI_SUB_ST[sub?.status] || sub?.status || '—'}${d ? ' · 截止 ' + d : ''}${p.deadline && !p.deadline.verified ? ' · 截止未核实' : ''}`);
-      return { submission: p.submissionId, label: p.label || '', platform: fqaiPlatform(sub), status: FQAI_SUB_ST[sub?.status] || sub?.status || '', deadline: d, deadlineVerified: !!p.deadline?.verified, deadlineNote: p.deadline?.note || '', dateRef: anchor(d, `${lab} ${p.label || ''}申请截止（${fqaiPlatform(sub)}）`) };
+      return { submission: p.submissionId, label: p.label || '', platform: fqaiPlatform(sub), status: FQAI_SUB_ST[sub?.status] || sub?.status || '', deadline: d, deadlineVerified: !!p.deadline?.verified, deadlineNote: fqaiScrubText(p.deadline?.note || '', block), dateRef: anchor(d, `${lab} ${p.label || ''}申请截止（${fqaiPlatform(sub)}）`) };
     });
     const rounds = B.rounds.filter(r => r.applicationId === a.id).map(r => {
       refs.set('round:' + r.id, `考试轮次：${lab} ${FQAI_RD_KIND[r.kind] || r.kind}${r.platform ? '（' + r.platform + '）' : ''}${r.deadline ? ' · 提交截止 ' + r.deadline : ''}${r.date ? ' · 日期 ' + r.date : ''} · ${FQAI_RD_ST[r.status] || r.status}${r.note ? ' · ' + r.note : ''}`);
-      return { id: r.id, kind: FQAI_RD_KIND[r.kind] || r.kind, platform: r.platform || '', status: FQAI_RD_ST[r.status] || r.status, deadline: r.deadline || '', date: r.date || '', location: r.location || '', note: r.note || '', deadlineRef: anchor(r.deadline, `${lab} ${FQAI_RD_KIND[r.kind] || r.kind}提交截止`), dateRef: anchor(r.date, `${lab} ${FQAI_RD_KIND[r.kind] || r.kind}日期`) };
+      return { id: r.id, kind: FQAI_RD_KIND[r.kind] || r.kind, platform: r.platform || '', status: FQAI_RD_ST[r.status] || r.status, deadline: r.deadline || '', date: r.date || '', location: r.location || '', note: fqaiScrubText(r.note || '', block), deadlineRef: anchor(r.deadline, `${lab} ${FQAI_RD_KIND[r.kind] || r.kind}提交截止`), dateRef: anchor(r.date, `${lab} ${FQAI_RD_KIND[r.kind] || r.kind}日期`) };
     });
     const dls = fqaiSchoolDeadlines(sch, a).map((d, i) => {
       refs.set(`deadline:${sch.id}:${i}`, `院校库 · ${sch.abbr} 截止：${d.d || '未公布'} ${d.p || ''}`.trim());
@@ -1219,30 +1277,52 @@ function fqaiContext(B, idx, staff, today, opt = {}) {
   });
   const tasks = B.tasks.filter(fqaiOpen).map(t => {
     refs.set('task:' + t.id, `任务：${t.title} · ${FQAI_TASK_ST[t.status] || t.status}${t.dueDate ? ' · 截止 ' + t.dueDate : ''}`);
-    return { id: t.id, title: t.title, category: t.category, application: t.applicationId || null, submission: t.submissionId || null, assignee: name(t.assigneeId), due: t.dueDate || '', daysLeft: t.dueDate ? fqaiDays(t.dueDate, today) : null, status: FQAI_TASK_ST[t.status] || t.status, blocked: t.blocked ? t.blockedReason || true : undefined, dependsOn: (t.dependsOn || []).length ? t.dependsOn : undefined, note: t.note || undefined };
+    return { id: t.id, title: t.title, category: t.category, application: t.applicationId || null, submission: t.submissionId || null, assignee: name(t.assigneeId), due: t.dueDate || '', daysLeft: t.dueDate ? fqaiDays(t.dueDate, today) : null, status: FQAI_TASK_ST[t.status] || t.status, blocked: t.blocked ? fqaiScrubText(t.blockedReason || '', block) || true : undefined, dependsOn: (t.dependsOn || []).length ? t.dependsOn : undefined, note: t.note ? fqaiScrubText(fqaiCut(t.note, 160), block) : undefined };
   });
-  const closed = B.tasks.filter(t => !fqaiOpen(t)).map(t => t.title).slice(-30);
+  const closed = B.tasks.filter(t => !fqaiOpen(t)).map(t => t.title).slice(-20);
   const docs = B.documents.filter(d => !d.archived).map(d => {
     const vs = B.versions.filter(v => v.documentId === d.id);
     refs.set('doc:' + d.id, `文书：${d.title} · ${FQAI_DOC_ST[d.status] || d.status} · ${vs.length} 个版本${d.dueDate ? ' · 截止 ' + d.dueDate : ''}`);
     const cur = vs.find(v => v.id === d.currentVersionId);
-    return { id: d.id, title: d.title, type: FQAI_DOC_TYPE[d.type] || d.type, status: FQAI_DOC_ST[d.status] || d.status, due: d.dueDate || '', wordLimit: d.wordLimit || '', versions: vs.length, writer: name(d.writerId), applications: d.applicationIds || [], submission: d.submissionId || null, dueRef: anchor(d.dueDate, `文书「${d.title}」截止`), text: opt.docText && cur?.kind === 'text' && ['supplemental', 'artist_statement'].includes(d.type) ? fqaiCut(cur.text, 900) : undefined };
+    return { id: d.id, title: d.title, type: FQAI_DOC_TYPE[d.type] || d.type, status: FQAI_DOC_ST[d.status] || d.status, due: d.dueDate || '', wordLimit: d.wordLimit || '', versions: vs.length, writer: name(d.writerId), applications: d.applicationIds || [], submission: d.submissionId || null, dueRef: anchor(d.dueDate, `文书「${d.title}」截止`), text: opt.docText && cur?.kind === 'text' && ['supplemental', 'artist_statement'].includes(d.type) ? fqaiScrubText(fqaiCut(cur.text, 900), block) : undefined };
   });
-  const reps = B.repertoire.map(r => { refs.set('rep:' + r.id, `曲目：${r.composer} ${r.title}（${r.duration || '?'}）· ${r.status || ''}`); return { id: r.id, composer: r.composer, title: r.title, duration: r.duration || '', applications: r.applicationIds || [], round: r.round || '', status: r.status || '', note: r.note || undefined }; });
+  const reps = B.repertoire.map(r => { refs.set('rep:' + r.id, `曲目：${r.composer} ${r.title}（${r.duration || '?'}）· ${r.status || ''}`); return { id: r.id, composer: r.composer, title: r.title, duration: r.duration || '', applications: r.applicationIds || [], round: r.round || '', status: r.status || '', note: r.note ? fqaiScrubText(fqaiCut(r.note, 120), block) : undefined }; });
   const refReqs = B.refRequests.map(r => {
     const rc = B.recommenders.find(x => x.id === r.recommenderId); const sub = B.sub(String(r.target || '').replace(/^sub:/, ''));
     refs.set('ref:' + r.id, `推荐信：${rc?.name || ''} → ${fqaiPlatform(sub)} · ${FQAI_REF_ST[r.status] || r.status}${r.dueAt ? ' · 截止 ' + r.dueAt : ''}`);
     return { id: r.id, recommender: rc ? `${rc.name}（${rc.title || ''}）` : '', submission: sub?.id || null, platform: fqaiPlatform(sub), status: FQAI_REF_ST[r.status] || r.status, invitedAt: r.invitedAt || '', dueAt: r.dueAt || '', dueRef: anchor(r.dueAt, `推荐信截止（${rc?.name || ''}，${fqaiPlatform(sub)}）`) };
   });
   const mats = B.materials.filter(m => !m.archived).map(m => { refs.set('material:' + m.id, `材料：${m.title} · ${m.status}`); return { id: m.id, title: m.title, status: m.status }; });
-  const acts = B.activity.slice().sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 10).map(x => ({ at: String(x.at).slice(0, 10), text: fqaiCut(x.text, 160) }));
+  const acts = B.activity.slice().sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 6).map(x => ({ at: String(x.at).slice(0, 10), text: fqaiScrubText(fqaiCut(x.text, 120), block) }));
   const recs = [];
-  if (opt.cats) { const seen = new Set(); for (const a of B.applications) for (const r of fqaiRecsFor(idx, a, opt.cats)) if (!seen.has(r.id)) { seen.add(r.id); recs.push(fqaiRecBrief(idx, r, opt.recBudget || 1400)); } }
-  const ctx = {
-    today, student: fqaiPublicStudent(s, opt.answers), staff: staff.filter(u => u.active !== false && u.active !== 0).map(u => ({ id: u.id, name: u.name, role: u.role })),
-    applications: apps, openTasks: tasks, closedTaskTitles: closed, documents: docs, repertoire: reps, references: refReqs, materials: mats, recentActivity: acts,
-    keyDates: keyDates.sort((a, b) => a.date.localeCompare(b.date)), schoolRecords: opt.cats ? recs : undefined
-  };
+  if (opt.cats) {
+    const seen = new Set(); let budget = 14000;
+    for (const a of B.applications.filter(x => !x.withdrawn)) {
+      for (const r of fqaiRecsFor(idx, a, opt.cats)) {
+        if (seen.has(r.id)) continue;
+        seen.add(r.id);
+        const brief = fqaiRecBrief(idx, r, opt.recBudget || 1400);
+        const len = JSON.stringify(brief).length;
+        if (budget - len < 0 && recs.length) break;
+        budget -= len; recs.push(brief);
+      }
+    }
+  }
+  // 员工只送与该学生相关的负责人 / 任务执行人 / 文书老师
+  const relStaff = new Set([s.advisorId, ...(s.writerIds || []), ...B.tasks.map(t => t.assigneeId), ...B.documents.map(d => d.writerId)].filter(Boolean));
+  const studentStaff = staff.filter(u => u.active !== false && u.active !== 0 && relStaff.has(u.id)).map(u => ({ id: u.id, name: u.name, role: u.role }));
+  const minimalStu = ['repertoire', 'schools', 'essay-review'].includes(action);
+  const ctx = action === 'repertoire'
+    ? { today, student: fqaiPublicStudent(s, { minimal: true, block }), staff: studentStaff, applications: apps.map(a => ({ id: a.id, school: a.school, schoolZh: a.schoolZh, program: a.program, rounds: a.rounds })), openTasks: tasks.map(t => ({ id: t.id, title: t.title, application: t.application, due: t.due, status: t.status })), documents: docs.filter(d => d.text), repertoire: reps, keyDates: keyDates.sort((a, b) => a.date.localeCompare(b.date)), schoolRecords: recs }
+    : {
+      today, student: fqaiPublicStudent(s, { answers: opt.answers, minimal: minimalStu, block }), staff: studentStaff,
+      applications: apps, openTasks: tasks,
+      closedTaskTitles: action === 'precheck' ? undefined : closed,
+      documents: docs, repertoire: reps, references: refReqs, materials: mats,
+      recentActivity: action === 'precheck' ? undefined : acts,
+      keyDates: keyDates.sort((a, b) => a.date.localeCompare(b.date)),
+      schoolRecords: opt.cats ? recs : undefined
+    };
   return { ctx, anchors, refs };
 }
 
@@ -1964,11 +2044,12 @@ ${FQAI_CARD_RULES}`), { action: 'schools', studentId: s.id, data: { today, stude
 async function fqaiActComms(deps, run, X, body, user) {
   const sub = ['parent', 'exam', 'materials'].includes(body.sub) ? body.sub : 'parent';
   const B = X.B, today = X.today;
-  const g = (B.student.profile?.guardians || []).find(x => x && x.name);
+  const block = fqaiStudentBlock(B.student, deps.idx);
+  const g = sub === 'parent' ? (B.student.profile?.guardians || []).find(x => x && x.name) : null;
   const label = { parent: '家长进度汇报', exam: '考试 / 面试提醒', materials: '催交材料' }[sub];
   const facts = {
     today, writerName: user.name, student: { name: B.student.name }, guardian: g ? { name: g.name, relation: g.relation || '' } : null,
-    recentDone: B.activity.filter(x => x.studentVisible !== false && fqaiDays(String(x.at).slice(0, 10), today) >= -10).sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 5).map(x => ({ date: String(x.at).slice(0, 10), text: x.text })),
+    recentDone: B.activity.filter(x => x.studentVisible !== false && fqaiDays(String(x.at).slice(0, 10), today) >= -10).sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 5).map(x => ({ date: String(x.at).slice(0, 10), text: fqaiScrubText(fqaiCut(x.text, 120), block) })),
     upcoming: X.ctx.keyDates.filter(d => d.daysLeft >= 0 && d.daysLeft <= 21).map(d => ({ date: d.date, what: d.what })).concat(X.ctx.openTasks.filter(t => t.daysLeft != null && t.daysLeft >= 0 && t.daysLeft <= 14).map(t => ({ date: t.due, what: t.title }))).sort((a, b) => a.date.localeCompare(b.date)).slice(0, 10),
     rounds: X.ctx.applications.flatMap(a => a.rounds.filter(r => (r.date || r.deadline) && fqaiDays(r.date || r.deadline, today) >= 0).map(r => ({ school: a.school, kind: r.kind, date: r.date, deadline: r.deadline, platform: r.platform, location: r.location, note: r.note }))),
     pendingMaterials: X.ctx.materials.filter(m => !['approved', 'na'].includes(m.status)),
@@ -2006,7 +2087,8 @@ async function fqaiActRefs(deps, run, X, body, user) {
   return { icon: 'mail', title: '推荐人提醒 · ' + B.student.name, sub: `${items.length} 位推荐人未提交`, drafts, cards: fqaiCards(raw, X), note: '推荐信本身应由推荐人亲自撰写；这里只起草邀请和提醒。' };
 }
 async function fqaiActPaste(deps, run, X, body) {
-  const text = String(body.text || '').trim().slice(0, 6000);
+  const rawText = String(body.text || '').trim().slice(0, 4000);
+  const text = fqaiScrubText(rawText, fqaiStudentBlock(X.B.student, deps.idx));
   if (!text) throw new FqaiError(400, '请先粘贴邮件、微信或 Offer 内容');
   X.pasted = text;
   const out = await fqaiAsk(deps, run, 'paste', fqaiSys(X.today, `任务：顾问粘贴了一段学校邮件 / 家长或学生微信 / Offer 内容（pasted）。请：
@@ -2044,7 +2126,7 @@ async function fqaiActDbscan(deps, run, user, scope) {
     const studs = [...new Set(affected.map(x => x.a.studentId))].slice(0, 6);
     for (const sid of studs) {
       const B = await fqaiLoadBundle(deps, sid);
-      const X = fqaiX(deps, B, { cats: ['process', 'audition', 'english', 'portfolio', 'academic'] });
+      const X = fqaiX(deps, B, { cats: ['process', 'audition', 'english', 'portfolio', 'academic'], action: 'dbscan' });
       X.ignored = await fqaiIgnored(db, sid);
       const out = await fqaiAsk(deps, run, 'dbscan', fqaiSys(today, `任务：院校库刚更新，changes 是程序比较出的变化。请判断这些变化对这位学生的申请（affected）有什么影响：
 - 截止日期提前 / 推后：调整相关任务的截止日期（用新日期的锚点），或新增“核实并更新申请截止”的任务。
@@ -2098,7 +2180,7 @@ ${op === 'grammar' ? '本次只改硬性语言错误：拼写、时态、主谓�
   }
   const B = await fqaiLoadBundle(deps, doc.studentId);
   if (op === 'facts') {
-    const X = fqaiX(deps, B, { answers: true });
+    const X = fqaiX(deps, B, { answers: true, action: 'essay-facts' });
     const out = await fqaiAsk(deps, run, 'essay-facts', `你在核对申请文书中的事实陈述。只输出 JSON。对照 profile（学生档案：经历、获奖、考试、问答）、repertoire（曲目）、applications（申请院校），找出文中可核对的事实（年份、名次、比赛名、时长、师承、职务、作品、学校名）。
 claim 必须是原文中连续的一段（逐字复制），verdict 只能是：一致 / 不一致 / 档案无记录 / 需确认；detail 用中文说明档案里怎么写。不一致的排在前面，最多 10 条。
 输出：{"summary":"一句话","facts":[{"claim":"…","verdict":"…","detail":"…"}]}`, { document: title, text, profile: X.ctx.student, repertoire: X.ctx.repertoire, applications: X.ctx.applications.map(a => ({ school: a.school, schoolZh: a.schoolZh, program: a.program })) }, 3000);
@@ -2123,7 +2205,7 @@ claim 必须是原文中连续的一段（逐字复制），verdict 只能是：
   // review：起草审核意见（读取当前版本）
   const v = B.versions.find(x => x.id === doc.currentVersionId);
   if (!v || v.kind !== 'text' || !v.text) return { summary: '当前版本是外部文件（网盘），AI 读不到正文。可以请文书老师把正文粘贴成在线版本，或自己写意见。', draft: '' };
-  const X = fqaiX(deps, B, { cats: ['audition', 'portfolio', 'process'], recBudget: 900 });
+  const X = fqaiX(deps, B, { cats: ['audition', 'portfolio', 'process'], recBudget: 900, action: 'essay-review' });
   const apps = X.ctx.applications.filter(a => (doc.applicationIds || []).includes(a.id) || a.parts.some(p => p.submission === doc.submissionId));
   const out = await fqaiAsk(deps, run, 'essay-review', `你在帮${user.role === 'supervisor' ? '申请主管' : '申请顾问'}起草文书审核意见，读者是文书老师。只输出 JSON。中文。
 ${body.decision === 'changes' ? '这次是“退回修改”：写 2–5 条具体、可执行的修改意见，按重要性排序，每条说明位置和原因。' : '这次是“通过”：写一句结论，再列 0–2 条不影响通过的小建议。'}
@@ -2166,7 +2248,7 @@ async function fqaiRunAction(deps, run, user, scope, body, emit) {
       emit({ type: 'status', text: '正在读取学生的申请、任务和文书…' });
       const B = await fqaiLoadBundle(deps, sid);
       const cats = { audit: ['process', 'audition', 'english', 'portfolio', 'academic'], tasks: ['process', 'audition', 'english', 'portfolio', 'academic'], precheck: ['process', 'audition', 'english', 'portfolio', 'academic'], repertoire: ['audition', 'portfolio'], paste: ['process', 'audition'] }[action];
-      const X = fqaiX(deps, B, { cats, docText: action === 'repertoire' });
+      const X = fqaiX(deps, B, { cats, docText: action === 'repertoire', action });
       X.ignored = await fqaiIgnored(deps.db, sid);
       emit({ type: 'status', text: { audit: '正在逐项检查任务的重复、顺序、关联和日期…', tasks: '正在对照院校库要求和已有任务…', precheck: '正在逐项检查…', repertoire: '正在对照各校考试曲目要求…', schools: '正在从院校库筛选…', comms: '正在起草…', refs: '正在起草邀请和提醒…', paste: '正在理解粘贴的内容…' }[action] });
       const fn = { audit: fqaiActAudit, tasks: fqaiActTasks, precheck: fqaiActPrecheck, repertoire: fqaiActRepertoire, schools: fqaiActSchools, comms: fqaiActComms, refs: fqaiActRefs, paste: fqaiActPaste }[action];
@@ -2240,15 +2322,25 @@ async function fqaiDispatch(path, method, body, deps) {
   }
   if (!cfg.apiKey) throw new FqaiError(503, 'AI 助手尚未配置：请在 Cloudflare 项目设置中添加 DEEPSEEK_API_KEY');
   if (path === '/api/ai/chat') return { stream: emit => fqaiChat(deps.env, run, db, user, body, emit, deps) };
-  if (path === '/api/ai/verify') return { stream: async emit => {
-    const t0 = Date.now();
-    await fqaiTake(db, user, 'verify', cfg.dailyVerify);
-    await fqaiTakePro(db, user, run);
-    const idx = await deps.loadIdx();
-    const rep = await fqaiVerify(deps.env, run, db, idx, body.id, String(body.question || '').slice(0, 500), emit);
-    await fqaiLog(db, { user: user.id, kind: 'verify', question: body.id + ' ' + (body.question || ''), tokensIn: rep.usage?.prompt_tokens, tokensOut: rep.usage?.completion_tokens, ms: Date.now() - t0, ok: true });
-    await emit({ type: 'verify', report: Object.assign({}, rep, { usage: undefined }) });
-  } };
+  if (path === '/api/ai/verify') {
+    const recId = String(body.id || '').trim();
+    if (!/^[A-Za-z0-9_.:-]{2,120}$/.test(recId)) throw new FqaiError(400, '条目 ID 格式不对');
+    return { stream: async emit => {
+      const t0 = Date.now(), qRaw = String(body.question || '').slice(0, 500);
+      const qLog = recId + (qRaw ? ' ' + await fqaiDigest(qRaw) : '');
+      try {
+        await fqaiTake(db, user, 'verify', cfg.dailyVerify);
+        await fqaiTakePro(db, user, run);
+        const idx = await deps.loadIdx();
+        const rep = await fqaiVerify(deps.env, run, db, idx, recId, qRaw, emit);
+        await fqaiLog(db, { user: user.id, kind: 'verify', question: qLog, tokensIn: rep.usage?.prompt_tokens, tokensOut: rep.usage?.completion_tokens, ms: Date.now() - t0, ok: true });
+        await emit({ type: 'verify', report: Object.assign({}, rep, { usage: undefined }) });
+      } catch (e) {
+        await fqaiLog(db, { user: user.id, kind: 'verify', question: qLog, ms: Date.now() - t0, ok: false, detail: e.status ? e.message : '核实失败' });
+        throw e;
+      }
+    } };
+  }
   throw new FqaiError(404, '接口不存在');
 }
 
@@ -2289,6 +2381,7 @@ async function fqaiRoute(req, env, url) {
     if (!db) throw new FqaiError(500, '申请系统未绑定 APPLY_DB');
     const user = await fqaiUser(req, db, cfg);
     await fqaiTables(db);
+    await fqaiPrune(db, cfg);
     let body = {};
     if (req.method === 'POST') {
       fqaiSameOrigin(req);
