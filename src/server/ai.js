@@ -2015,6 +2015,8 @@ function fqaiEssayCard(c, base, X) {
 
 /* ---------- 各功能 ---------- */
 const FQAI_ACTIONS = {
+  check: { label: '检查这位学生', model: true, student: true },
+  draft: { label: '起草', model: true, student: true },
   audit: { label: '流程体检', model: true, student: true },
   auditAll: { label: '体检总览', model: false, student: false },
   tasks: { label: '建议任务', model: true, student: true },
@@ -2116,6 +2118,94 @@ ${FQAI_CARD_RULES}`), { action: 'schools', studentId: s.id, data: { today, stude
   md = md.replace(/\[\[([^\]\s]{2,120})\]\]/g, (m, id) => idx.recById.has(id) ? m : id);
   return { icon: 'school', title: `选校建议 · ${s.name}`, sub: `${idx.majorName(s.majorId)} · ${s.level === 'UG' ? '本科' : s.level === 'PG' ? '研究生' : s.level} · ${s.season || ''}`, md, cards: fqaiCards(out.cards, X).filter(c => c.kind === 'add').slice(0, 1), note: '院校库没有录取难度数据，AI 不判断录取概率。追加哪所学校由你和家长决定；新增申请仍在学生页手动添加。' };
 }
+async function fqaiActCheck(deps, run, X, body, user, emit) {
+  const B = X.B, idx = deps.idx, today = X.today;
+  const { issues, dupIds } = fqaiAuditIssues(B, idx, today);
+  X.issues = issues; X.dupIds = dupIds; X.cfg = deps.cfg;
+  let a = body.applicationId ? B.app(body.applicationId) : null;
+  if (!a) {
+    const nextPre = x => (x.parts || []).map(p => p.deadline?.date).filter(d => d && fqaiDays(d, today) >= 0).sort()[0] || '9999';
+    a = B.applications.filter(x => !x.withdrawn).sort((x, y) => nextPre(x).localeCompare(nextPre(y)))[0] || null;
+  }
+  const preChecks = a ? fqaiPrecheck(B, idx, a, today) : [];
+  const preLabel = a ? `${fqaiSchoolLabel(idx, a)}${a.program ? ' ' + a.program : ''}` : '';
+  const auditChecks = issues.length ? fqaiIssueChecks(issues) : [{ label: '流程与任务检查', text: '没有发现重复、顺序、关联或日期冲突', level: 'ok' }];
+  const taggedPre = preChecks.map(c => Object.assign({}, c, { label: preLabel ? `${preLabel} · ${c.label}` : c.label }));
+  const checks = auditChecks.concat(taggedPre);
+  const nAudit = { bad: issues.filter(i => i.level === 'bad').length, warn: issues.filter(i => i.level === 'warn').length };
+  const nPre = { bad: preChecks.filter(c => c.level === 'bad').length, warn: preChecks.filter(c => c.level === 'warn').length };
+
+  if (!body.generate) {
+    const parts = [
+      issues.length ? `流程与任务发现 **${issues.length} 项**问题（需处理 ${nAudit.bad}、提醒 ${nAudit.warn}）` : '流程与任务未发现重复、顺序、关联或日期冲突',
+      a ? `提交前检查（${preLabel}）：共 **${preChecks.length} 项**（需处理 ${nPre.bad}、提醒 ${nPre.warn}）` : '该生暂无进行中的申请'
+    ];
+    const follow = deps.cfg.apiKey
+      ? [{ label: '生成建议卡片', action: 'check', studentId: B.student.id, applicationId: body.applicationId || '', generate: true, ai: true }]
+      : [];
+    return {
+      icon: 'flow',
+      title: `检查这位学生 · ${B.student.name}`,
+      sub: `程序检查（未调用 AI） · 流程 ${issues.length} 项${a ? ` · 提交前 ${preChecks.length} 项` : ''}`,
+      md: parts.join('；') + '。',
+      checks,
+      cards: [],
+      follow,
+      note: deps.cfg.apiKey
+        ? '以上由程序直接计算，未调用大模型、不消耗次数。需要可采纳的修改卡片或联网核对官网时，点「生成建议卡片」。'
+        : '以上由程序直接计算（当前未配置 DEEPSEEK_API_KEY，仅显示程序检查）。'
+    };
+  }
+
+  const nextDate = x => {
+    const live = B.rounds.filter(r => r.applicationId === x.id && !['passed', 'not_passed', 'cancelled', 'submitted'].includes(r.status));
+    const fut = [...(x.parts || []).map(p => p.deadline?.date), ...live.flatMap(r => [r.deadline, r.date])].filter(d => fqaiIso(d) && fqaiDays(d, today) >= 0).sort()[0];
+    if (fut) return fut;
+    if (live.some(r => !r.deadline && !r.date)) return '9998';
+    if ((x.parts || []).some(p => !p.deadline?.date)) return '9999';
+    return '';
+  };
+  let apps = B.applications.filter(x => !x.withdrawn && (!body.applicationId || x.id === body.applicationId) && fqaiSchoolOf(idx, x) && nextDate(x))
+    .sort((x, y) => nextDate(x).localeCompare(nextDate(y))).slice(0, 3);
+  if (!apps.length && a && fqaiSchoolOf(idx, a)) apps = [a];
+  const web = await fqaiWebStep(deps, run, X, body, apps, '核对这些申请的官网：当季申请截止、预审 / 录像 / 面试要求、流程顺序、材料清单和文书要求（题目、字数、平台、截止），找出系统里不一致或缺少的步骤与文书。', emit);
+  emit && emit({ type: 'status', text: 'AI 正在综合检查并生成建议卡片…' });
+  const out = await fqaiAsk(deps, run, 'check', fqaiSys(today, `任务：为这位学生做一次综合检查（流程体检 + 任务查漏 + 提交前检查）。
+数据说明：
+- issues 是程序算出的任务/流程疑似问题（不要改动结论，如判断无需处理写进 ok 数组 “I编号：理由”，需处理的给出卡片并标 "issue":"I编号"）。
+- precheck 是针对当前重点申请的逐项检查结果（level: ok / warn / bad）。
+- webFindings 是联网核对过原文的官网信息（可能为空）。
+请：
+1. 用 2–4 句 Markdown 总结最紧急的 1–2 件事和提交准备度。
+2. 对照 schoolRecords、webFindings、openTasks、documents（已有文书）和 precheck 里的 bad/warn 项，给出建议卡片（新增/调整/关闭任务、合并重复/删除多余/改关联/改前置/连锁顺延，以及缺漏或变更文书的 essay 卡）。
+3. 只有来源为“学校官网”或“官方平台”的联网结论才能作为改日期依据；引用官网写 {"web":"W编号"}。申请截止、考试轮次、推荐信备注等非任务字段写进 manual。
+输出：{"summary":"…","cards":[...],"manual":[...],"ok":["I3：……"]}
+${FQAI_CARD_RULES}
+${FQAI_AUDIT_CARDS}
+${FQAI_ESSAY_CARDS}`), {
+    action: 'check',
+    studentId: B.student.id,
+    applicationId: a?.id || '',
+    data: X.ctx,
+    issues: issues.map(i => ({ id: i.id, type: i.type, level: i.level, text: i.text, tasks: i.tasks })),
+    precheck: a ? { applicationId: a.id, label: preLabel, checks: preChecks } : null,
+    webFindings: fqaiWebForModel(web)
+  }, 5000);
+  const cards = fqaiCards(out.cards, X);
+  const okList = fqaiArr(out.ok).map(x => fqaiCut(String(x || '').trim(), 160)).filter(Boolean).slice(0, 12);
+  return {
+    icon: 'flow',
+    title: `检查这位学生 · ${B.student.name}`,
+    sub: `程序检查 ${issues.length} 项（需处理 ${nAudit.bad} · 提醒 ${nAudit.warn}）${a ? ` · 提交前 ${preChecks.length} 项` : ''}${web ? ` · 联网：搜索 ${web.searches || 0} 次、读 ${web.opens || 0} 页` : ''}`,
+    md: String(out.summary || ''),
+    checks,
+    web: fqaiWebOut(web),
+    cards,
+    manual: fqaiManual(out.manual),
+    okList,
+    note: '上方检查项由程序逐项计算；联网结论都附官网原文。每项修改仍需你逐张确认，采纳后可撤销。'
+  };
+}
 async function fqaiActComms(deps, run, X, body, user) {
   const sub = ['parent', 'exam', 'materials'].includes(body.sub) ? body.sub : 'parent';
   const B = X.B, today = X.today;
@@ -2135,9 +2225,18 @@ async function fqaiActComms(deps, run, X, body, user) {
 不要编造日期、分数或学校消息；不写学生的证件、电话等信息。
 输出：{"body":"消息正文（纯文本，可用换行和“·”列点）","note":"给顾问的一句提醒（可选）"}`), { action: 'comms', sub, studentId: B.student.id, facts }, 1500);
   const drafts = [{ label, to: sub === 'parent' ? (g ? `发给 ${g.name}（${g.relation || '家长'}）` : '发给家长') : `发给 ${B.student.name}`, body: fqaiCut(out.body, 3000), note: [out.note, '只用了系统里的事实；请检查后再发。不会自动发送。'].filter(Boolean).join(' ') }];
-  const cards = sub === 'parent' ? fqaiCards([{ kind: 'activity', text: `已向家长发送申请进度汇报（${fqaiMD(today)}）`, reason: '发送后采纳这条，动态里会留下沟通记录；没发就忽略。' }], X) : [];
+  const cards = [];
   return { icon: 'msg', title: '沟通草稿 · ' + label, sub: B.student.name, drafts, cards,
-    follow: [['parent', '家长进度汇报'], ['exam', '考试 / 面试提醒'], ['materials', '催交材料']].filter(([k]) => k !== sub).map(([k, l]) => ({ label: l, action: 'comms', studentId: B.student.id, sub: k })), note: '草稿可以直接在框里修改，再复制发送。' };
+    follow: [['parent', '家长进度汇报'], ['exam', '考试 / 面试提醒'], ['materials', '催交材料']].filter(([k]) => k !== sub).map(([k, l]) => ({ label: l, action: 'comms', studentId: B.student.id, sub: k, ai: true })), note: '草稿可以直接在框里修改，再复制发送。' };
+}
+async function fqaiActDraft(deps, run, X, body, user) {
+  const sub = ['parent', 'exam', 'materials', 'refs'].includes(body.sub) ? body.sub : 'parent';
+  const labels = { parent: '家长进度汇报', exam: '考试 / 面试提醒', materials: '催交材料', refs: '推荐人提醒' };
+  const follow = Object.entries(labels).filter(([k]) => k !== sub).map(([k, l]) => ({ label: l, action: 'draft', studentId: X.B.student.id, sub: k, ai: true }));
+  const res = sub === 'refs'
+    ? await fqaiActRefs(deps, run, X, body, user)
+    : await fqaiActComms(deps, run, X, Object.assign({}, body, { sub }), user);
+  return Object.assign({}, res, { icon: 'msg', title: `起草 · ${labels[sub]}`, follow });
 }
 async function fqaiActRefs(deps, run, X, body, user) {
   const B = X.B, today = X.today;
@@ -2308,11 +2407,12 @@ function fqaiX(deps, B, opt) {
 async function fqaiRunAction(deps, run, user, scope, body, emit) {
   const action = String(body.action || '');
   const A = FQAI_ACTIONS[action]; if (!A) throw new FqaiError(400, '未知功能');
+  const isModelAction = A.model && !(action === 'check' && !body.generate);
   const t0 = Date.now();
   let result, quotaReceipt = null;
   try {
     if (A.student && !scope.manage.has(String(body.studentId || ''))) throw new FqaiError(403, '你没有这位学生的管理权限');
-    if (A.model) { if (!deps.cfg.apiKey) throw new FqaiError(503, 'AI 助手尚未配置：请在 Cloudflare 项目设置中添加 DEEPSEEK_API_KEY'); quotaReceipt = await fqaiTakeQuota(deps.db, user, 'chat', deps.cfg.dailyChat, run); }
+    if (isModelAction) { if (!deps.cfg.apiKey) throw new FqaiError(503, 'AI 助手尚未配置：请在 Cloudflare 项目设置中添加 DEEPSEEK_API_KEY'); quotaReceipt = await fqaiTakeQuota(deps.db, user, 'chat', deps.cfg.dailyChat, run); }
     if (action === 'brief') {
       emit({ type: 'status', text: '正在汇总你名下的事项…' });
       result = fqaiBrief(user, scope, await deps.data.rows(['applications', 'submissions', 'rounds', 'tasks', 'documents', 'refRequests', 'recommenders']), fqaiDay());
@@ -2326,16 +2426,16 @@ async function fqaiRunAction(deps, run, user, scope, body, emit) {
       const sid = String(body.studentId || '');
       emit({ type: 'status', text: '正在读取学生的申请、任务和文书…' });
       const B = await fqaiLoadBundle(deps, sid);
-      const cats = { audit: ['process', 'audition', 'english', 'portfolio', 'academic'], tasks: ['process', 'audition', 'english', 'portfolio', 'academic'], precheck: ['process', 'audition', 'english', 'portfolio', 'academic'], repertoire: ['audition', 'portfolio'], paste: ['process', 'audition'] }[action];
+      const cats = { check: ['process', 'audition', 'english', 'portfolio', 'academic'], audit: ['process', 'audition', 'english', 'portfolio', 'academic'], tasks: ['process', 'audition', 'english', 'portfolio', 'academic'], precheck: ['process', 'audition', 'english', 'portfolio', 'academic'], repertoire: ['audition', 'portfolio'], paste: ['process', 'audition'] }[action];
       const X = fqaiX(deps, B, { cats, docText: action === 'repertoire', action });
       X.ignored = await fqaiIgnored(deps.db, sid);
-      emit({ type: 'status', text: { audit: '正在逐项检查任务的重复、顺序、关联和日期…', tasks: '正在对照院校库要求和已有任务…', precheck: '正在逐项检查…', repertoire: '正在对照各校考试曲目要求…', schools: '正在从院校库筛选…', comms: '正在起草…', refs: '正在起草邀请和提醒…', paste: '正在理解粘贴的内容…' }[action] });
-      const fn = { audit: fqaiActAudit, tasks: fqaiActTasks, precheck: fqaiActPrecheck, repertoire: fqaiActRepertoire, schools: fqaiActSchools, comms: fqaiActComms, refs: fqaiActRefs, paste: fqaiActPaste }[action];
+      emit({ type: 'status', text: { check: body.generate ? '正在综合检查并生成建议卡片…' : '正在逐项计算流程和提交前检查…', audit: '正在逐项检查任务的重复、顺序、关联和日期…', tasks: '正在对照院校库要求和已有任务…', precheck: '正在逐项检查…', repertoire: '正在对照各校考试曲目要求…', schools: '正在从院校库筛选…', draft: body.sub === 'refs' ? '正在起草推荐人邀请和提醒…' : '正在起草沟通消息…', comms: '正在起草…', refs: '正在起草邀请和提醒…', paste: '正在理解粘贴的内容…' }[action] });
+      const fn = { check: fqaiActCheck, draft: fqaiActDraft, audit: fqaiActAudit, tasks: fqaiActTasks, precheck: fqaiActPrecheck, repertoire: fqaiActRepertoire, schools: fqaiActSchools, comms: fqaiActComms, refs: fqaiActRefs, paste: fqaiActPaste }[action];
       result = await fn(deps, run, X, body, user, emit);
       if (action === 'tasks' && B.applications.length) result.follow = [{ label: '流程体检', action: 'audit', studentId: sid }, { label: '提交前检查', action: 'precheck', studentId: sid }, ...(B.repertoire.length ? [{ label: '曲目对照', action: 'repertoire', studentId: sid }] : [])];
       if (action === 'audit' && B.applications.length) result.follow = [{ label: '提交前检查', action: 'precheck', studentId: sid }, ...(B.repertoire.length ? [{ label: '曲目对照', action: 'repertoire', studentId: sid }] : [])];
     }
-    if (run.tier === 'pro' && A.model) result.model = 'pro';
+    if (run.tier === 'pro' && isModelAction) result.model = 'pro';
     await deps.log({ user: user.id, kind: 'run:' + action, question: action + ' ' + (body.studentId || ''), tokensIn: deps.tokens.in, tokensOut: deps.tokens.out, ms: Date.now() - t0, ok: true, detail: `cards=${(result.cards || []).length}${result.web ? ` web=${(result.web.log || []).length}` : ''}` });
     emit({ type: 'result', result });
   } catch (e) {
