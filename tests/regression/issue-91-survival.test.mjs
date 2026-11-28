@@ -99,6 +99,11 @@ test('#91 survival report: role gates (non-supervisor 403), feedback validation,
       method: 'POST', cookie: advACookie,
       body: { studentId: 'stu-91-a', key: 'k1', kind: 'add', decision: 'adopt', reason: 'duplicate' },
     })).status, 400);
+    // Client cannot spoof decision='show' (only server fqaiRunAction records 'show')
+    assert.equal((await h.call('/api/ai/feedback', {
+      method: 'POST', cookie: advACookie,
+      body: { studentId: 'stu-91-a', key: 'k-spoof-show', kind: 'add', decision: 'show' },
+    })).status, 400);
 
     // Clicking ignore then attaching optional reason within 10m updates in place (no duplicate ignore count)
     assert.equal((await h.call('/api/ai/feedback', {
@@ -115,6 +120,27 @@ test('#91 survival report: role gates (non-supervisor 403), feedback validation,
     assert.equal(updRow.ignored, 1);
     assert.equal(updRow.ignoreReasons.handled, 1);
     assert.equal(updRow.ignoreReasons.unspecified, 0);
+
+    // 3. Feedback retention pruning (365d overall, 180d for 'show' rows)
+    const h2 = await createWorkerHarness({ AI_FEEDBACK_RETENTION_DAYS: '365', AI_FEEDBACK_SHOW_RETENTION_DAYS: '180' });
+    try {
+      await h2.call('/api/setup', { method: 'POST', body: { setupKey: h2.env.APPLY_SETUP_KEY, name: 'S', username: 'sup2', password: 'Supervisor2026', demo: false } });
+      const ck2 = extractCookie((await h2.call('/api/login', { method: 'POST', body: { username: 'sup2', password: 'Supervisor2026' } })).headers);
+      const nowMs = Date.now();
+      h2.db.raw.exec(`
+        CREATE TABLE IF NOT EXISTS fq_ai_feedback (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, user_id TEXT, student_id TEXT, key TEXT, kind TEXT, decision TEXT, action TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '', risk INTEGER NOT NULL DEFAULT 0, target_id TEXT NOT NULL DEFAULT '');
+      `);
+      const ins = (days, key, decision) => h2.db.raw.prepare('INSERT INTO fq_ai_feedback (at, user_id, student_id, key, kind, decision) VALUES (?,?,?,?,?,?)').run(new Date(nowMs - days * 86400e3).toISOString(), 'u1', 's1', key, 'add', decision);
+      ins(400, 'old-adopt-pruned', 'adopt');
+      ins(200, 'old-show-pruned', 'show');
+      ins(200, 'mid-adopt-kept', 'adopt');
+      ins(10, 'fresh-show-kept', 'show');
+      assert.equal((await h2.call('/api/ai/status', { cookie: ck2 })).status, 200);
+      const keysLeft = h2.db.raw.prepare('SELECT key FROM fq_ai_feedback ORDER BY id').all().map(x => x.key);
+      assert.deepEqual(keysLeft, ['mid-adopt-kept', 'fresh-show-kept']);
+    } finally {
+      h2.db.close();
+    }
   } finally {
     h.db.close();
   }

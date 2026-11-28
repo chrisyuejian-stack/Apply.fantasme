@@ -24,6 +24,8 @@ function fqaiConfig(env) {
     deletePolicy: ['strict', 'any', 'off'].includes(String(env.AI_DELETE || '').toLowerCase()) ? String(env.AI_DELETE).toLowerCase() : 'strict',
     logRetentionDays: num(env.AI_LOG_RETENTION_DAYS, 90),
     cacheRetentionDays: num(env.AI_CACHE_RETENTION_DAYS, 7),
+    feedbackRetentionDays: num(env.AI_FEEDBACK_RETENTION_DAYS, 365),
+    feedbackShowRetentionDays: num(env.AI_FEEDBACK_SHOW_RETENTION_DAYS, 180),
     dailyGlobal: num(env.AI_DAILY_GLOBAL, 0),
     maxChatRounds: Math.min(Math.max(num(env.AI_MAX_CHAT_ROUNDS, 6), 1), 12),
     maxRunModelCalls: Math.min(Math.max(num(env.AI_MAX_RUN_CALLS, 8), 1), 20),
@@ -96,7 +98,10 @@ async function fqaiTables(db) {
       ['risk', 'ALTER TABLE fq_ai_feedback ADD COLUMN risk INTEGER NOT NULL DEFAULT 0'],
       ['target_id', "ALTER TABLE fq_ai_feedback ADD COLUMN target_id TEXT NOT NULL DEFAULT ''"]
     ].filter(([name]) => !cols.has(name)).map(([, sql]) => sql);
-    for (const sql of alters) await db.prepare(sql).run();
+    for (const sql of alters) {
+      try { await db.prepare(sql).run(); }
+      catch (err) { if (!/duplicate column/i.test(String(err?.message || ''))) throw err; }
+    }
   })().catch(e => { fqaiReady.delete(db); throw e; });
   fqaiReady.set(db, p);
   return p;
@@ -170,8 +175,12 @@ async function fqaiPrune(db, cfg, opt = {}) {
     const stmts = [];
     const logDays = cfg?.logRetentionDays ?? 90;
     const cacheDays = cfg?.cacheRetentionDays ?? 7;
+    const fbDays = cfg?.feedbackRetentionDays ?? 365;
+    const fbShowDays = cfg?.feedbackShowRetentionDays ?? 180;
     if (logDays > 0) stmts.push(db.prepare('DELETE FROM fq_ai_log WHERE at < ?').bind(new Date(now - logDays * 86400e3).toISOString()));
     if (cacheDays > 0) stmts.push(db.prepare('DELETE FROM fq_ai_page_cache WHERE fetched_at < ?').bind(now - cacheDays * 86400e3));
+    if (fbDays > 0) stmts.push(db.prepare('DELETE FROM fq_ai_feedback WHERE at < ?').bind(new Date(now - fbDays * 86400e3).toISOString()));
+    if (fbShowDays > 0 && (!fbDays || fbShowDays < fbDays)) stmts.push(db.prepare("DELETE FROM fq_ai_feedback WHERE decision = 'show' AND at < ?").bind(new Date(now - fbShowDays * 86400e3).toISOString()));
     if (stmts.length) await db.batch(stmts);
   } catch (_) { fqaiPrunedAt.delete(db); }
 }
@@ -2856,7 +2865,7 @@ async function fqaiDispatch(path, method, body, deps) {
   if (path === '/api/ai/feedback') {
     if (!canAssist) throw new FqaiError(403, '仅内部顾问和主管可提交建议反馈');
     const d = String(body.decision || '');
-    if (!['show', 'adopt', 'adopt-edited', 'ignore', 'unignore', 'undo'].includes(d)) throw new FqaiError(400, '参数错误');
+    if (!['adopt', 'adopt-edited', 'ignore', 'unignore', 'undo'].includes(d)) throw new FqaiError(400, '参数错误');
     const kind = String(body.kind || '');
     if (!FQAI_CARD_KINDS.includes(kind)) throw new FqaiError(400, '参数错误');
     const action = String(body.action || '');
@@ -2875,7 +2884,7 @@ async function fqaiDispatch(path, method, body, deps) {
     if (d === 'ignore' && reason && key) {
       const prevIg = await db.prepare('SELECT id, at, decision, reason FROM fq_ai_feedback WHERE user_id = ? AND student_id = ? AND key = ? ORDER BY id DESC LIMIT 1').bind(user.id, sid, key).first();
       if (prevIg && prevIg.decision === 'ignore' && !prevIg.reason && (Date.now() - Date.parse(prevIg.at)) <= 600e3) {
-        await db.prepare('UPDATE fq_ai_feedback SET reason = ? WHERE id = ?').bind(reason, prevIg.id).run();
+        await db.prepare('UPDATE fq_ai_feedback SET reason = ? WHERE id = ? AND user_id = ? AND student_id = ?').bind(reason, prevIg.id, user.id, sid).run();
         return { json: { ok: true } };
       }
     }
