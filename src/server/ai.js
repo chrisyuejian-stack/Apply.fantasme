@@ -1595,6 +1595,181 @@ function fqaiBrief(user, scope, rows, today) {
   return { icon: 'sun', title: '今日简报', sub: '由系统数据计算，不调用 AI', md, follow, note: '这份简报不修改任何数据。' };
 }
 
+/* ---------- 开工队列：打开面板即见（全量打分排序后再截断 ≤7 条，不调用模型、不扣额度） ---------- */
+function fqaiQueue(user, scope, rows, today, staff = []) {
+  const role = user.role;
+  const isSup = role === 'supervisor';
+  const isWriter = role === 'writer';
+  const ids = isSup || isWriter ? scope.visible : scope.manage;
+  const stuName = id => scope.byId.get(id)?.name || '';
+  const days = d => fqaiDays(d, today);
+  const appsAll = rows.filter(r => r.tbl === 'applications');
+  const appById = new Map(appsAll.map(a => [a.id, a]));
+  const recsAll = rows.filter(r => r.tbl === 'recommenders');
+  const recById = new Map(recsAll.map(r => [r.id, r]));
+  const studentOf = r => r.studentId || (r.applicationId && appById.get(r.applicationId)?.studentId) || (r.recommenderId && recById.get(r.recommenderId)?.studentId) || '';
+  const by = t => rows.filter(r => r.tbl === t && ids.has(studentOf(r))).map(r => r.studentId ? r : Object.assign({}, r, { studentId: studentOf(r) }));
+
+  const items = [];
+  const push = it => { if (it && it.id && ids.has(it.studentId)) items.push(it); };
+  const relLabel = n => n < 0 ? `逾期 ${-n} 天` : n === 0 ? '今天截止' : `${n} 天后截止`;
+
+  if (isWriter) {
+    for (const d of by('documents')) {
+      if (d.archived || d.writerId !== user.id || !['drafting', 'revising'].includes(d.status)) continue;
+      const dl = d.dueDate && fqaiIso(d.dueDate) ? d.dueDate : '';
+      const st = dl ? days(dl) : null;
+      const rev = d.status === 'revising';
+      let score = rev ? 250 : 150, tag = rev ? '退回修改' : '撰写中', level = rev ? 'warn' : 'muted';
+      if (st !== null && st < 0) { score = 400; tag = rev ? '已逾期·退回' : '已逾期'; level = 'bad'; }
+      else if (st !== null && st <= 7) { score = 300; tag = rev ? '7 日内·退回' : '7 日内截止'; level = 'warn'; }
+      const meta = [FQAI_DOC_ST[d.status] || d.status, dl ? `${dl}（${relLabel(st)}）` : ''].filter(Boolean).join(' · ');
+      push({ id: `doc:${d.id}`, kind: 'doc', score, level, tag, title: `${stuName(d.studentId)} · ${d.title}`, meta, dueDate: dl, studentId: d.studentId, href: `#/doc/${d.id}` });
+    }
+    items.sort((a, b) => (b.score - a.score) || (a.dueDate || '9999-99-99').localeCompare(b.dueDate || '9999-99-99') || a.id.localeCompare(b.id));
+    return { today, role, total: items.length, overload: [], items: items.slice(0, 7) };
+  }
+
+  const subs = new Map(by('submissions').map(s => [s.id, s]));
+  const apps = by('applications').filter(a => !a.withdrawn);
+  const nearestDeadline = new Map();
+  const noteDl = (sid, d) => {
+    if (!fqaiIso(d)) return;
+    const prev = nearestDeadline.get(sid);
+    if (!prev || d < prev) nearestDeadline.set(sid, d);
+  };
+
+  for (const t of by('tasks')) {
+    if (!fqaiOpen(t)) continue;
+    if (!isSup && t.assigneeId && t.assigneeId !== user.id) continue;
+    const dl = t.dueDate && fqaiIso(t.dueDate) ? t.dueDate : '';
+    const n = dl ? days(dl) : null;
+    if (n !== null && n < 0) {
+      push({ id: `task:${t.id}`, kind: 'task', score: 400, level: 'bad', tag: t.blocked ? '已逾期·受阻' : '已逾期', title: `${stuName(t.studentId)} · ${t.title}`, meta: `${dl}（${relLabel(n)}）`, dueDate: dl, studentId: t.studentId, href: `#/student/${t.studentId}/tasks` });
+    } else if (isSup && t.blocked) {
+      push({ id: `task:${t.id}`, kind: 'task', score: 350, level: 'bad', tag: '受阻', title: `${stuName(t.studentId)} · ${t.title}`, meta: t.blockedReason || (dl ? `${dl}（${relLabel(n)}）` : '任务受阻'), dueDate: dl, studentId: t.studentId, href: `#/student/${t.studentId}/tasks` });
+    } else if (n !== null && n <= 7) {
+      noteDl(t.studentId, dl);
+      push({ id: `task:${t.id}`, kind: 'task', score: 300, level: 'warn', tag: '7 日内截止', title: `${stuName(t.studentId)} · ${t.title}`, meta: `${dl}（${relLabel(n)}）`, dueDate: dl, studentId: t.studentId, href: `#/student/${t.studentId}/tasks` });
+    } else if (dl) {
+      noteDl(t.studentId, dl);
+    }
+  }
+
+  for (const a of apps) {
+    const lab = a.schoolId || a.schoolName || a.program || '申请';
+    for (const p of a.parts || []) {
+      const sb = subs.get(p.submissionId);
+      if (['submitted', 'received'].includes(sb?.status)) continue;
+      const dl = p.deadline?.date;
+      if (!fqaiIso(dl)) continue;
+      const n = days(dl);
+      if (n < 0 || n <= 7) {
+        noteDl(a.studentId, dl);
+        push({ id: `app:${a.id}:${p.submissionId || p.label || dl}`, kind: 'app', score: n < 0 ? 400 : 300, level: n < 0 ? 'bad' : 'warn', tag: n < 0 ? '已逾期' : '7 日内截止', title: `${stuName(a.studentId)} · ${lab} 申请截止`, meta: `${dl}（${relLabel(n)}）${fqaiPlatform(sb) ? ' · ' + fqaiPlatform(sb) : ''}`, dueDate: dl, studentId: a.studentId, href: `#/app/${a.id}` });
+      } else {
+        noteDl(a.studentId, dl);
+      }
+    }
+  }
+
+  for (const r of by('rounds')) {
+    if (['passed', 'submitted', 'cancelled', 'not_passed'].includes(r.status)) continue;
+    const dl = r.date || r.deadline;
+    if (!fqaiIso(dl)) continue;
+    const n = days(dl);
+    const a = appById.get(r.applicationId);
+    const lab = a ? (a.schoolId || a.schoolName || '') : '';
+    const rKind = r.date ? (FQAI_RD_KIND[r.kind] || '考试') : (FQAI_RD_KIND[r.kind] || '录像') + '截止';
+    if (n < 0 || n <= 7) {
+      noteDl(r.studentId, dl);
+      push({ id: `round:${r.id}`, kind: 'round', score: n < 0 ? 400 : 300, level: n < 0 ? 'bad' : 'warn', tag: n < 0 ? '已逾期' : '7 日内截止', title: `${stuName(r.studentId)} · ${lab} ${rKind}`.trim(), meta: `${dl}（${relLabel(n)}）`, dueDate: dl, studentId: r.studentId, href: a ? `#/app/${a.id}` : `#/student/${r.studentId}/apps` });
+    } else {
+      noteDl(r.studentId, dl);
+    }
+  }
+
+  for (const r of by('refRequests')) {
+    if (r.status === 'submitted' || !fqaiIso(r.dueAt)) continue;
+    const n = days(r.dueAt);
+    if (n < 0 || n <= 7) {
+      noteDl(r.studentId, r.dueAt);
+      const rn = recById.get(r.recommenderId)?.name || '';
+      push({ id: `ref:${r.id}`, kind: 'ref', score: n < 0 ? 400 : 300, level: n < 0 ? 'bad' : 'warn', tag: n < 0 ? '已逾期' : '7 日内截止', title: `${stuName(r.studentId)} · 推荐信${rn ? '（' + rn + '）' : ''}`, meta: `${r.dueAt}（${relLabel(n)}）`, dueDate: r.dueAt, studentId: r.studentId, href: `#/student/${r.studentId}/apps` });
+    } else {
+      noteDl(r.studentId, r.dueAt);
+    }
+  }
+
+  const wantDocStatus = isSup ? 'supervisor_review' : 'advisor_review';
+  for (const d of by('documents')) {
+    if (d.archived || d.status !== wantDocStatus) continue;
+    const dl = d.dueDate && fqaiIso(d.dueDate) ? d.dueDate : '';
+    const n = dl ? days(dl) : null;
+    let score = 250, tag = isSup ? '待主管审核' : '待你审核', level = 'warn';
+    if (n !== null && n < 0) { score = 400; tag = '已逾期·待审'; level = 'bad'; }
+    else if (n !== null && n <= 7) { score = 300; tag = '7 日内·待审'; level = 'warn'; }
+    if (dl) noteDl(d.studentId, dl);
+    push({ id: `doc:${d.id}`, kind: 'doc', score, level, tag, title: `${stuName(d.studentId)} · 文书「${d.title}」`, meta: dl ? `${dl}（${relLabel(n)}）` : (FQAI_DOC_ST[d.status] || ''), dueDate: dl, studentId: d.studentId, href: `#/doc/${d.id}` });
+  }
+
+  for (const m of by('materials')) {
+    if (m.archived || !['collecting', 'changes'].includes(m.status)) continue;
+    const stu = scope.byId.get(m.studentId);
+    if (!stu || ['done', 'withdrawn', 'archived'].includes(stu.status)) continue;
+    const dl = (m.dueDate && fqaiIso(m.dueDate) ? m.dueDate : '') || nearestDeadline.get(m.studentId) || '';
+    push({ id: `mat:${m.id}`, kind: 'material', score: 200, level: 'warn', tag: '缺材料', title: `${stuName(m.studentId)} · ${m.title}`, meta: (m.status === 'changes' ? '需重做' : '收集中') + (dl ? ` · 最近截止 ${dl}` : ''), dueDate: dl, studentId: m.studentId, href: `#/student/${m.studentId}/files` });
+  }
+
+  const lastAct = new Map();
+  for (const x of by('activity')) {
+    const day = String(x.at || '').slice(0, 10);
+    if (!fqaiIso(day)) continue;
+    const prev = lastAct.get(x.studentId);
+    if (!prev || day > prev) lastAct.set(x.studentId, day);
+  }
+  const hasOpenApp = new Set(apps.map(a => a.studentId));
+  const hasOpenTask = new Set(by('tasks').filter(fqaiOpen).map(t => t.studentId));
+  for (const sid of ids) {
+    const stu = scope.byId.get(sid);
+    if (!stu || ['done', 'withdrawn', 'archived', 'paused'].includes(stu.status)) continue;
+    if (!hasOpenApp.has(sid) && !hasOpenTask.has(sid)) continue;
+    const la = lastAct.get(sid);
+    const silentDays = la ? -days(la) : null;
+    if (silentDays === null || silentDays >= 14) {
+      const dl = nearestDeadline.get(sid) || '';
+      push({ id: `stale:${sid}`, kind: 'stale', score: 100, level: 'muted', tag: silentDays !== null ? `${silentDays} 天无动态` : '暂无动态', title: `${stu.name} · 久未跟进`, meta: dl ? `最近截止 ${dl}` : '有进行中申请或任务', dueDate: dl, studentId: sid, href: `#/student/${sid}/apps` });
+    }
+  }
+
+  const overload = [];
+  if (isSup) {
+    const byAdv = new Map();
+    const bump = (sid, k) => {
+      const advId = scope.byId.get(sid)?.advisorId;
+      if (!advId) return;
+      if (!byAdv.has(advId)) byAdv.set(advId, { advisorId: advId, overdue: 0, blocked: 0, soon7: 0 });
+      byAdv.get(advId)[k]++;
+    };
+    for (const it of items) {
+      if (it.score === 400) bump(it.studentId, 'overdue');
+      else if (it.score === 350) bump(it.studentId, 'blocked');
+      else if (it.score === 300) bump(it.studentId, 'soon7');
+    }
+    const staffById = new Map((staff || []).map(u => [u.id, u]));
+    for (const st of byAdv.values()) {
+      const total = st.overdue + st.blocked + st.soon7;
+      if (st.overdue >= 2 || total >= 4) {
+        overload.push({ advisorId: st.advisorId, advisorName: staffById.get(st.advisorId)?.name || st.advisorId, overdue: st.overdue, blocked: st.blocked, soon7: st.soon7, total });
+      }
+    }
+    overload.sort((a, b) => (b.overdue * 3 + b.blocked * 2 + b.soon7) - (a.overdue * 3 + a.blocked * 2 + a.soon7) || a.advisorId.localeCompare(b.advisorId));
+  }
+
+  items.sort((a, b) => (b.score - a.score) || (a.dueDate || '9999-99-99').localeCompare(b.dueDate || '9999-99-99') || a.id.localeCompare(b.id));
+  return { today, role, total: items.length, overload: overload.slice(0, 3), items: items.slice(0, 7) };
+}
+
 /* ---------- 院校库更新检查：程序逐条比较新旧版本 ---------- */
 function fqaiSnapOf(idx) {
   const dl = {}; for (const s of idx.schools) dl[s.id] = (s.deadlines || []).map(d => [d.lv || '', (d.mj || []).join('/'), fqaiArr(d.k).join('/'), d.d || '', d.p || ''].join('|'));
@@ -2464,6 +2639,12 @@ async function fqaiDispatch(path, method, body, deps) {
       usage: { web: U.web || 0, webLimit: cfg.dailyWeb, used: U.chat || 0, limit: cfg.dailyChat, essay: U.essay || 0, essayLimit: cfg.dailyEssay, verify: U.verify || 0, verifyLimit: cfg.dailyVerify, pro: U.pro || 0, proLimit: cfg.dailyPro, global: G, globalLimit: cfg.dailyGlobal }, data, pasteExample: deps.pasteExample || '' } };
   }
   if (!canAssist && !canEssay) throw new FqaiError(403, 'AI 助手仅对内部顾问开放');
+  if (path === '/api/ai/queue' && method === 'GET') {
+    const scope = await fqaiScope(deps.data, user);
+    const staff = user.role === 'supervisor' ? await deps.data.staff() : [];
+    const rows = await deps.data.rows(['applications', 'submissions', 'rounds', 'tasks', 'documents', 'refRequests', 'recommenders', 'materials', 'activity']);
+    return { json: fqaiQueue(user, scope, rows, fqaiDay(), staff) };
+  }
   let m;
   if ((m = path.match(/^\/api\/ai\/record\/([A-Za-z0-9_.:-]{2,120})$/)) && method === 'GET') {
     const idx = await deps.loadIdx(); const r = idx.recById.get(m[1]);
