@@ -47,16 +47,28 @@
     warn: P(`<path d="M12 4l9 16H3z" ${S}/><path d="M12 10v4M12 17v.5" ${S}/>`)
   };
   const TOOLS = [
-    { id: 'audit', label: '流程体检', icon: 'flow', need: 'student', tip: '程序逐项检查重复、顺序颠倒、关联挂错和日期冲突；AI 结合官网（可联网）梳理流程，给出合并 / 删除 / 改关联 / 顺延等修改卡片' },
-    { id: 'tasks', label: '建议任务', icon: 'tasks', need: 'student', tip: '对照院校库和官网（可联网）：给出新增 / 调整 / 关闭任务建议，并把官网要求的文书一起建档、查重、关联任务' },
-    { id: 'precheck', label: '提交前检查', icon: 'check', need: 'student', tip: '逐项检查某一所学校的申请是否齐备' },
-    { id: 'repertoire', label: '曲目对照', icon: 'music', need: 'student', tip: '把曲目表和各校考试曲目要求逐校对照' },
-    { id: 'schools', label: '选校建议', icon: 'school', need: 'student', tip: '按专业、层次、语言成绩和剩余时间从院校库里找候选校' },
-    { id: 'comms', label: '沟通草稿', icon: 'msg', need: 'student', tip: '家长进度汇报、催材料、考试提醒的微信草稿' },
-    { id: 'refs', label: '推荐人提醒', icon: 'mail', need: 'student', tip: '按推荐信状态起草邀请 / 提醒消息' },
-    { id: 'brief', label: '今日简报', icon: 'sun', need: null, tip: '你名下的逾期、即将到期、待审文书和关键日期' },
-    { id: 'auditAll', label: '体检总览', icon: 'list', need: null, tip: '名下所有学生的任务问题一览（程序计算，不调用 AI、不联网）' },
-    { id: 'dbscan', label: '院校库更新检查', icon: 'db', need: null, tip: '院校库导入新版本后，找出受影响的申请和任务' }
+    { id: 'check', label: '检查这位学生', icon: 'flow', need: 'student', model: false, tip: '程序逐项检查重复、顺序、关联、日期和提交前齐备情况（不调 AI、不扣额度）；结果页可按需「生成建议卡片」' },
+    { id: 'draft', label: '起草', icon: 'msg', need: 'student', model: true, tip: '起草家长进度汇报、考试 / 面试提醒、催交材料或推荐人提醒' }
+  ];
+  const MORE_TOOLS = [
+    { id: 'repertoire', label: '曲目对照', icon: 'music', need: 'student', model: true, tip: '把曲目表和各校考试曲目要求逐校对照' },
+    { id: 'schools', label: '选校建议', icon: 'school', need: 'student', model: true, tip: '按专业、层次、语言成绩和剩余时间从院校库里找候选校' },
+    { id: 'dbscan', label: '院校库更新检查', icon: 'db', need: null, model: true, tip: '院校库导入新版本后，找出受影响的申请和任务' },
+    { id: 'auditAll', label: '体检总览', icon: 'list', need: null, model: false, tip: '名下所有学生的任务问题一览（程序计算，不调用 AI、不联网）' },
+    { id: 'brief', label: '今日简报', icon: 'sun', need: null, model: false, tip: '你名下的逾期、即将到期、待审文书和关键日期' }
+  ];
+  const ALL_TOOLS = TOOLS.concat(MORE_TOOLS, [
+    { id: 'audit', label: '流程体检', icon: 'flow', need: 'student', model: true },
+    { id: 'tasks', label: '建议任务', icon: 'tasks', need: 'student', model: true },
+    { id: 'precheck', label: '提交前检查', icon: 'check', need: 'student', model: true },
+    { id: 'comms', label: '沟通草稿', icon: 'msg', need: 'student', model: true },
+    { id: 'refs', label: '推荐人提醒', icon: 'mail', need: 'student', model: true }
+  ]);
+  const DRAFT_TYPES = [
+    { sub: 'parent', label: '家长进度汇报' },
+    { sub: 'exam', label: '考试 / 面试提醒' },
+    { sub: 'materials', label: '催交材料' },
+    { sub: 'refs', label: '推荐人提醒' }
   ];
   const KIND = { add: ['新增任务', 'info'], update: ['调整任务', 'warn'], close: ['关闭任务', 'muted'], activity: ['记录动态', 'blue'], merge: ['合并重复', 'warn'], delete: ['删除任务', 'bad'], relink: ['改关联', 'blue'], deps: ['改前置', 'blue'], cascade: ['连锁顺延', 'warn'], essay: ['文书', 'doc'] };
   const ESSAY_MODE = { new: '新建文书', merge: '合并文书', replace: '更新文书要求', link: '建档并关联任务' };
@@ -64,7 +76,7 @@
   const webOn = () => status?.web !== false && LS.get('fqai:web', true) !== false;
   const LV = { UG: '本科', PG: '研究生', ALL: '通用' };
 
-  let status = null, conv = SS.get(KEY, []), busy = false, built = false, userId = null;
+  let status = null, conv = SS.get(KEY, []), busy = false, built = false, userId = null, moreOpen = false, draftOpen = false;
   let sel = SS.get('fqai:sel', { studentId: '', applicationId: '' });
   let root, panel, body, input, sendBtn, pasteBtn, drawer, foot, ctxBar;
 
@@ -203,38 +215,64 @@
     if (open) { syncCtx(false); refreshCards(); scrollEnd(); }
   }
   function scrollEnd() { requestAnimationFrame(() => { body.scrollTop = body.scrollHeight; }); }
+  function proChk() {
+    if (!status?.enabled) return '';
+    return `<label class="fqai-pro-chk" title="开启后本次将使用 Pro 模型"><input type="checkbox" data-sel="pro-inline" ${LS.get('fqai:mode', 'flash') === 'pro' ? 'checked' : ''}>Pro</label>`;
+  }
   function renderCtx() {
     if (!ctxBar) return;
     const studs = A.students();
     const apps = sel.studentId ? A.apps(sel.studentId) : [];
+    const on = !!status?.enabled;
+    const toolBtn = t => `<button type="button" data-tool="${t.id}" title="${esc(t.tip)}" ${t.need === 'student' && !sel.studentId ? 'data-dim="1"' : ''} ${t.model && !on ? 'disabled' : ''} ${t.id === 'draft' && draftOpen ? 'aria-pressed="true"' : ''}>${ICON[t.icon]}<span>${t.label}</span></button>`;
+    const aiMore = MORE_TOOLS.filter(t => t.model);
+    const progMore = MORE_TOOLS.filter(t => !t.model);
     ctxBar.innerHTML = `
       <div class="fqai-ctx-row">
         <label><span>学生</span><select data-sel="student"><option value="">选择学生…</option>${studs.map(s => `<option value="${esc(s.id)}" ${s.id === sel.studentId ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select></label>
         <label><span>申请</span><select data-sel="app" ${sel.studentId ? '' : 'disabled'}><option value="">全部申请</option>${apps.map(a => `<option value="${esc(a.id)}" ${a.id === sel.applicationId ? 'selected' : ''}>${esc(A.appLabel(a))} · ${esc(a.program || '')}</option>`).join('')}</select></label>
       </div>
-      <div class="fqai-tools">${TOOLS.map(t => `<button type="button" data-tool="${t.id}" title="${esc(t.tip)}" ${t.need === 'student' && !sel.studentId ? 'data-dim="1"' : ''}>${ICON[t.icon]}<span>${t.label}</span></button>`).join('')}</div>`;
+      <div class="fqai-tools">
+        ${TOOLS.map(toolBtn).join('')}
+        <div class="fqai-more-wrap">
+          <button type="button" data-fq="more" aria-expanded="${moreOpen ? 'true' : 'false'}" title="更多工具">更多 ▾</button>
+          ${moreOpen ? `<div class="fqai-more-menu" role="menu">
+            <div class="fqai-more-hd"><span>AI 分析</span>${proChk()}</div>
+            ${aiMore.map(toolBtn).join('')}
+            <div class="fqai-more-hd"><span>程序直出</span></div>
+            ${progMore.map(toolBtn).join('')}
+          </div>` : ''}
+        </div>
+      </div>
+      ${draftOpen && on ? `<div class="fqai-draftbar"><span class="fqai-draftbar-t">起草类型：</span>${DRAFT_TYPES.map(d => `<button type="button" class="fqai-chip" data-draft-sub="${d.sub}" data-draft-label="${esc(d.label)}">${esc(d.label)}</button>`).join('')}${proChk()}</div>` : ''}`;
   }
   function renderFoot() {
     const u = status?.usage;
     const mode = LS.get('fqai:mode', 'flash');
     const w = status?.web !== false;
-    foot.innerHTML = `<label class="fqai-mode">模型<select data-sel="mode"><option value="flash" ${mode !== 'pro' ? 'selected' : ''}>自动 · Flash</option><option value="pro" ${mode === 'pro' ? 'selected' : ''}>Pro</option></select></label>
-      <label class="fqai-webt" title="${w ? '体检、提交前检查和提问时，允许 AI 搜索并阅读学校官网；检索词不含学生个人信息' : '服务器已关闭联网检索（AI_WEB=off）'}"><input type="checkbox" data-sel="web" ${webOn() ? 'checked' : ''} ${w ? '' : 'disabled'}>${ICON.globe}联网</label>
-      <span>${u ? `今日 ${u.used}${u.limit ? '/' + u.limit : ''} 次${w && u.webLimit ? ` · 联网 ${u.web || 0}/${u.webLimit}` : ''}` : ''} · 发给 AI 的上下文仅含申请进度与学业/曲目要点（含已裁剪的动态/粘贴文本与该生相关员工；已去除监护人、证件号、手机号、邮箱、住址与生日；联网检索不含姓名）</span>`;
+    const on = !!status?.enabled;
+    const modelCtrl = on ? `<label class="fqai-mode" title="仅用于底部提问和粘贴转任务；其他 AI 功能可在各自操作旁切换 Pro">提问/转任务模型<select data-sel="mode"><option value="flash" ${mode !== 'pro' ? 'selected' : ''}>自动 · Flash</option><option value="pro" ${mode === 'pro' ? 'selected' : ''}>Pro</option></select></label>
+      <label class="fqai-webt" title="${w ? '检查（生成卡片）和提问时，允许 AI 搜索并阅读学校官网；检索词不含学生个人信息' : '服务器已关闭联网检索（AI_WEB=off）'}"><input type="checkbox" data-sel="web" ${webOn() ? 'checked' : ''} ${w ? '' : 'disabled'}>${ICON.globe}联网</label>` : '';
+    foot.innerHTML = `${modelCtrl}<span>${on && u ? `今日 ${u.used}${u.limit ? '/' + u.limit : ''} 次${w && u.webLimit ? ` · 联网 ${u.web || 0}/${u.webLimit}` : ''} · ` : ''}发给 AI 的上下文仅含申请进度与学业/曲目要点（含已裁剪的动态/粘贴文本与该生相关员工；已去除监护人、证件号、手机号、邮箱、住址与生日；联网检索不含姓名）</span>`;
   }
   function renderAll() {
-    if (!status?.enabled) {
-      body.innerHTML = `<div class="fqai-empty"><b>AI 助手尚未启用</b><p>需要在 Cloudflare 项目中配置 DEEPSEEK_API_KEY 后才能使用。请联系申请主管。</p></div>`;
-      input.disabled = sendBtn.disabled = pasteBtn.disabled = true;
-      return;
-    }
+    const on = !!status?.enabled;
+    input.disabled = sendBtn.disabled = pasteBtn.disabled = !on;
     if (!conv.length) {
+      if (!on) {
+        body.innerHTML = `<div class="fqai-empty"><b>当前未配置 AI 密钥（仅可使用程序检查与总览）</b><p>配置 <code>DEEPSEEK_API_KEY</code> 后可解锁自由提问、粘贴转任务、起草消息与生成建议卡片。下方程序检查不调用大模型、也不消耗额度。</p>
+          <div class="fqai-quick">
+            <button type="button" data-tool="check">${ICON.flow}<span><b>检查这位学生</b><small>程序逐项检查流程问题与提交前齐备情况（免密钥）</small></span></button>
+            <button type="button" data-tool="auditAll">${ICON.list}<span><b>体检总览</b><small>名下所有学生的任务问题一览（免密钥）</small></span></button>
+            <button type="button" data-tool="brief">${ICON.sun}<span><b>今日简报</b><small>我名下的逾期、到期、待审文书和关键日期</small></span></button>
+          </div></div>`;
+        return;
+      }
       body.innerHTML = `<div class="fqai-empty"><b>选一个学生，再点上方的功能</b>
-        <p>AI 会读取院校库和这位学生的申请、任务、文书、曲目与推荐信，给出建议卡片。<b>每一项修改都要你点「采纳」才会生效</b>，采纳后和你手动操作一样记录在动态里，可以撤销。</p>
+        <p>默认检查由程序直接计算（不调 AI、不扣额度）；需要修改卡片时再按需生成。<b>每一项修改都要你点「采纳」才会生效</b>，采纳后和你手动操作一样记录在动态里，可以撤销。</p>
         <div class="fqai-quick">
-          <button type="button" data-tool="brief">${ICON.sun}<span><b>今日简报</b><small>我名下的逾期、到期、待审文书和关键日期</small></span></button>
-          <button type="button" data-tool="audit">${ICON.flow}<span><b>流程体检</b><small>查重复、顺序颠倒、关联挂错、日期冲突，并联网核对官网</small></span></button>
-          <button type="button" data-tool="tasks">${ICON.tasks}<span><b>建议任务</b><small>对照院校库与已有任务，给出新增 / 调整 / 关闭建议</small></span></button>
+          <button type="button" data-tool="check">${ICON.flow}<span><b>检查这位学生</b><small>程序直出流程问题与提交前检查，可按需生成建议卡片</small></span></button>
+          <button type="button" data-tool="draft">${ICON.msg}<span><b>起草</b><small>家长进度汇报、考试提醒、催交材料、推荐人提醒</small></span></button>
           <button type="button" data-fq="paste-demo">${ICON.paste}<span><b>粘贴转任务</b><small>把学校邮件、家长微信粘进输入框，提取待办</small></span></button>
         </div></div>`;
       return;
@@ -268,7 +306,9 @@
     const okl = (r.okList || []).map(x => `<li>${inline(esc(x))}</li>`).join('');
     const drafts = (r.drafts || []).map((d, k) => `<div class="fqai-draft"><div class="fqai-draft-h"><b>${esc(d.label)}</b>${d.to ? `<span>${esc(d.to)}</span>` : ''}<button type="button" class="fqai-mini" data-copy="${i}:${k}">${ICON.copy}复制</button></div><textarea rows="${Math.min(14, Math.max(4, String(d.body || '').split('\n').length + 1))}" data-draft="${i}:${k}">${esc(d.body)}</textarea>${d.note ? `<div class="fqai-tiny">${esc(d.note)}</div>` : ''}</div>`).join('');
     const manual = (r.manual || []).map(x => `<li>${inline(esc(x))}</li>`).join('');
-    const follow = (r.follow || []).map(f => `<button type="button" class="fqai-chip" data-follow='${esc(JSON.stringify(f))}'>${esc(f.label)}</button>`).join('');
+    const followList = r.follow || [];
+    const follow = followList.map(f => `<button type="button" class="fqai-chip" data-follow='${esc(JSON.stringify(f))}'>${esc(f.label)}</button>`).join('');
+    const followPro = followList.some(f => f.ai) ? proChk() : '';
     return `<div class="fqai-res">
       <div class="fqai-res-h">${ICON[r.icon] || ICON.spark}<div><b>${esc(r.title)}</b>${r.sub ? `<small>${esc(r.sub)}</small>` : ''}</div>${r.model === 'pro' ? '<span class="fqai-pro">Pro</span>' : ''}</div>
       ${r.md ? `<div class="fqai-md">${md(r.md)}</div>` : ''}
@@ -279,7 +319,7 @@
       ${okl ? `<details class="fqai-okl"><summary>程序提示、但 AI 判断不需要处理的（${(r.okList || []).length}）</summary><ul>${okl}</ul></details>` : ''}
       ${manual ? `<div class="fqai-manual"><b>以下不是任务，AI 不会修改，请在系统里手动更新：</b><ul>${manual}</ul></div>` : ''}
       ${cards.length ? `<div class="fqai-cards-h"><b>建议 ${cards.length} 项</b><span>已处理 ${done}/${cards.length} · 每项单独确认</span></div><div class="fqai-cardlist">${cards.map((c, k) => cardHTML(c, i, k)).join('')}</div>` : ''}
-      ${follow ? `<div class="fqai-follow">${follow}</div>` : ''}
+      ${follow ? `<div class="fqai-follow">${follow}${followPro}</div>` : ''}
       ${r.note ? `<p class="fqai-tiny">${esc(r.note)}</p>` : ''}
     </div>`;
   }
@@ -706,26 +746,40 @@
   }
 
   /* ---------------- 交互 ---------------- */
+  function syncMode(m) {
+    const mode = m === 'pro' ? 'pro' : 'flash';
+    LS.set('fqai:mode', mode);
+    document.querySelectorAll('[data-sel="mode"]').forEach(el => { el.value = mode; });
+    document.querySelectorAll('[data-sel="pro-inline"]').forEach(el => { el.checked = mode === 'pro'; });
+  }
   function onChange(e) {
     const cb = e.target.closest('[data-cas]');
     if (cb) { const [i, k, j] = cb.dataset.cas.split(':').map(Number); const c = conv[i]?.cards?.[k]; const x = c?.items?.[j]; if (!x) return; const sk = new Set(c.skip || []); cb.checked ? sk.delete(x.id) : sk.add(x.id); c.skip = [...sk]; return rerenderMsg(i); }
     const s = e.target.closest('[data-sel]'); if (!s) return;
     if (s.dataset.sel === 'student') { sel = { studentId: s.value, applicationId: '' }; SS.set('fqai:sel', sel); renderCtx(); }
     else if (s.dataset.sel === 'app') { sel.applicationId = s.value; SS.set('fqai:sel', sel); }
-    else if (s.dataset.sel === 'mode') LS.set('fqai:mode', s.value);
+    else if (s.dataset.sel === 'mode') syncMode(s.value);
+    else if (s.dataset.sel === 'pro-inline') syncMode(s.checked ? 'pro' : 'flash');
     else if (s.dataset.sel === 'web') LS.set('fqai:web', !!s.checked);
   }
   function onClick(e) {
     const nav = e.target.closest('a[data-nav]');
     if (nav) { if (window.matchMedia('(max-width:640px)').matches) toggle(false); return; }
-    const t = e.target.closest('[data-fq],[data-tool],[data-rec],[data-verify],[data-card],[data-follow],[data-copy]');
+    if (moreOpen && !e.target.closest('.fqai-more-wrap')) { moreOpen = false; renderCtx(); }
+    const t = e.target.closest('[data-fq],[data-tool],[data-draft-sub],[data-rec],[data-verify],[data-card],[data-follow],[data-copy]');
     if (!t) return;
     if (t.dataset.card) return onCard(t);
+    if (t.dataset.draftSub) {
+      draftOpen = false; moreOpen = false; renderCtx();
+      if (!sel.studentId) { const s = ctxBar.querySelector('[data-sel="student"]'); s.focus(); s.classList.add('fqai-flash'); setTimeout(() => s.classList.remove('fqai-flash'), 900); return; }
+      return run('draft', { sub: t.dataset.draftSub, label: '起草 · ' + (t.dataset.draftLabel || '') });
+    }
     if (t.dataset.tool) return tool(t.dataset.tool);
     if (t.dataset.follow) { try { const f = JSON.parse(t.dataset.follow); if (f.studentId) { sel = { studentId: f.studentId, applicationId: f.applicationId || '' }; SS.set('fqai:sel', sel); renderCtx(); } return f.text ? paste(f.text) : run(f.action, f); } catch (_) { return; } }
     if (t.dataset.copy) { const ta = body.querySelector(`textarea[data-draft="${t.dataset.copy}"]`); if (ta) copy(ta.value, t); return; }
+    if (t.dataset.fq === 'more') { moreOpen = !moreOpen; if (moreOpen) draftOpen = false; return renderCtx(); }
     if (t.dataset.fq === 'close') return toggle(false);
-    if (t.dataset.fq === 'reset') { if (busy) return; conv = []; SS.set(KEY, conv); closeDrawer(); return renderAll(); }
+    if (t.dataset.fq === 'reset') { if (busy) return; conv = []; SS.set(KEY, conv); moreOpen = false; draftOpen = false; closeDrawer(); return renderAll(); }
     if (t.dataset.fq === 'back') return closeDrawer();
     if (t.dataset.fq === 'paste-demo') { input.value = status?.pasteExample || ''; autosize(); input.focus(); return; }
     if (t.dataset.verify) return verify(t.dataset.verify, drawer.querySelector('.fqai-vq')?.value || '');
@@ -736,11 +790,17 @@
     if (navigator.clipboard) navigator.clipboard.writeText(text).then(done, () => {}); else done();
   }
   function tool(id) {
-    const t = TOOLS.find(x => x.id === id); if (!t) return;
+    const t = ALL_TOOLS.find(x => x.id === id); if (!t) return;
     if (t.need === 'student' && !sel.studentId) {
       const s = ctxBar.querySelector('[data-sel="student"]'); s.focus(); s.classList.add('fqai-flash'); setTimeout(() => s.classList.remove('fqai-flash'), 900);
       return;
     }
+    if (id === 'draft') {
+      if (!status?.enabled) return;
+      draftOpen = !draftOpen; moreOpen = false; renderCtx();
+      return;
+    }
+    moreOpen = false; draftOpen = false; renderCtx();
     run(id, {});
   }
   function closeDrawer() { drawer.hidden = true; drawer.innerHTML = ''; }
@@ -760,13 +820,19 @@
         ${r.zh ? `<p>${para(r.zh)}</p>` : ''}${r.en ? `<p class="fqai-en">${para(r.en)}</p>` : ''}
         ${(r.stages || []).map(x => `<div class="fqai-stage"><div class="fqai-k">${esc(x.t || x.stage || '')}</div>${x.zh ? `<p>${para(x.zh)}</p>` : ''}${x.en ? `<p class="fqai-en">${para(x.en)}</p>` : ''}</div>`).join('')}
         ${(r.src || []).length ? `<h4>官网来源</h4><ul class="fqai-src">${r.src.map(u => `<li><a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(u)}</a></li>`).join('')}</ul>
-          <div class="fqai-verify"><input class="fqai-vq" maxlength="300" placeholder="想核实什么？（可不填）"><button type="button" class="fqai-b pri" data-verify="${esc(r.id)}">${ICON.globe}去官网核实</button></div>` : ''}
+          <div class="fqai-verify"><input class="fqai-vq" maxlength="300" placeholder="想核实什么？（可不填）">${proChk()}<button type="button" class="fqai-b pri" data-verify="${esc(r.id)}">${ICON.globe}去官网核实</button></div>` : ''}
         <p class="fqai-tiny">条目 ID：${esc(r.id)}</p>`;
     } catch (err) { drawer.querySelector('.fqai-dbody').innerHTML = `<p class="fqai-err">${esc(err.message)}</p>`; }
   }
   function setBusy(b, text) {
-    busy = b; input.disabled = sendBtn.disabled = pasteBtn.disabled = b;
-    ctxBar.querySelectorAll('button,select').forEach(x => { x.disabled = b; });
+    busy = b; input.disabled = sendBtn.disabled = pasteBtn.disabled = b || !status?.enabled;
+    ctxBar.querySelectorAll('button,select').forEach(x => {
+      if (b) { x.disabled = true; return; }
+      if (x.dataset.sel === 'app') { x.disabled = !sel.studentId; return; }
+      const tid = x.dataset.tool;
+      const t = tid ? ALL_TOOLS.find(k => k.id === tid) : null;
+      x.disabled = !!(t && t.model && !status?.enabled);
+    });
     let el = body.querySelector('.fqai-typing');
     if (b) {
       if (!el) { el = document.createElement('div'); el.className = 'fqai-msg bot fqai-typing'; body.appendChild(el); }
@@ -817,18 +883,22 @@
     return [s?.name, a ? A.appLabel(a) : ''].filter(Boolean).join(' · ');
   }
   async function run(action, extra) {
-    if (busy || !status?.enabled) return;
-    const t = TOOLS.find(x => x.id === action);
+    const needAi = !(action === 'check' && !extra?.generate) && action !== 'auditAll' && action !== 'brief';
+    if (busy || (needAi && !status?.enabled)) return;
+    const t = ALL_TOOLS.find(x => x.id === action);
     const c = Object.assign({ studentId: sel.studentId, applicationId: sel.applicationId }, extra || {});
     if (t && !t.need) { c.studentId = ''; c.applicationId = ''; }
     appendMsg(push({ role: 'action', icon: t?.icon || 'spark', content: (extra?.label || t?.label || action) + (c.studentId ? ' · ' + ctxText(c) : '') }));
-    await call('/api/ai/run', { action, studentId: c.studentId || '', applicationId: c.applicationId || '', sub: c.sub || '', web: webOn() });
+    const payload = { action, studentId: c.studentId || '', applicationId: c.applicationId || '', sub: c.sub || '', web: webOn() };
+    if (c.generate) payload.generate = true;
+    if (!needAi) payload.mode = 'flash';
+    await call('/api/ai/run', payload);
   }
   async function paste(text) {
     text = String(text || '').trim();
     if (busy || !status?.enabled) return;
     if (!text) { input.placeholder = '先把学校邮件、家长微信或 Offer 内容粘贴到这里，再点「转任务」'; input.focus(); return; }
-    if (!sel.studentId) { tool('tasks'); return; }
+    if (!sel.studentId) { tool('check'); return; }
     input.value = ''; autosize();
     appendMsg(push({ role: 'action', icon: 'paste', content: '转任务 · ' + ctxText(sel) + '\n' + (text.length > 160 ? text.slice(0, 160) + '…' : text) }));
     await call('/api/ai/run', { action: 'paste', studentId: sel.studentId, applicationId: sel.applicationId || '', text });
@@ -890,16 +960,18 @@
     if (!form || form.dataset.fqai || !status?.essay || !lastAct) return;
     const ap = APP(); if (!ap) return;
     const doc = ap.bt.doc(lastAct.id); if (!doc) return;
+    const on = !!status?.enabled;
     if (lastAct.act === 'doc-review') {
       const ta = form.querySelector('textarea[name="comment"]');
       if (!ta || lastAct.stage === 'student') return;
       form.dataset.fqai = '1';
       const box = document.createElement('div');
       box.className = 'fqai-ess';
-      box.innerHTML = `<div class="fqai-ess-bar"><span class="fqai-ess-t">${ICON.spark}AI 文书助手</span><button type="button" class="fqai-b" data-ess="review">起草${lastAct.decision === 'changes' ? '修改意见' : '审核备注'}</button><span class="fqai-ess-n">读取当前版本，按文书要求与院校库给出意见草稿；你修改后再提交</span></div><div class="fqai-ess-out" hidden></div>`;
+      box.innerHTML = `<div class="fqai-ess-bar"><span class="fqai-ess-t">${ICON.spark}AI 文书助手</span><button type="button" class="fqai-b" data-ess="review" ${on ? '' : 'disabled'}>起草${lastAct.decision === 'changes' ? '修改意见' : '审核备注'}</button>${proChk()}<span class="fqai-ess-n">读取当前版本，按文书要求与院校库给出意见草稿；你修改后再提交</span></div><div class="fqai-ess-out" hidden></div>`;
       ta.closest('.field')?.before(box) || ta.before(box);
       const ctx = { form, doc, ta, box, review: true };
       box.addEventListener('click', e => essayClick(e, ctx));
+      box.addEventListener('change', e => { const s = e.target.closest('[data-sel="pro-inline"]'); if (s) syncMode(s.checked ? 'pro' : 'flash'); });
       return;
     }
     const ta = form.querySelector('textarea[name="text"]');
@@ -907,7 +979,9 @@
     form.dataset.fqai = '1';
     const box = document.createElement('div');
     box.className = 'fqai-ess';
-    box.innerHTML = `<div class="fqai-ess-bar"><span class="fqai-ess-t">${ICON.spark}AI 文书助手</span>${ESS.map(x => `<button type="button" class="fqai-b" data-ess="${x.op}" title="${esc(x.tip)}">${x.label}</button>`).join('')}<span class="fqai-ess-n" data-len>${lengthText(doc, ta.value)}</span></div>
+    const aiEss = ESS.filter(x => x.op !== 'length');
+    const lenEss = ESS.find(x => x.op === 'length');
+    box.innerHTML = `<div class="fqai-ess-bar"><span class="fqai-ess-t">${ICON.spark}AI 文书助手</span>${aiEss.map(x => `<button type="button" class="fqai-b" data-ess="${x.op}" title="${esc(x.tip)}" ${on ? '' : 'disabled'}>${x.label}</button>`).join('')}${proChk()}<span class="fqai-ess-sep"></span><button type="button" class="fqai-b" data-ess="${lenEss.op}" title="${esc(lenEss.tip)}">${lenEss.label}</button><span class="fqai-ess-n" data-len>${lengthText(doc, ta.value)}</span></div>
       <div class="fqai-ess-out" hidden></div>
       <div class="fqai-ess-foot">只修改学生自己写的内容的语言，不代写新段落。接受的修改只改动下面的文本框，点「保存」才会生成新版本。</div>`;
     const field = ta.closest('.field') || ta.parentElement;
@@ -916,6 +990,7 @@
     ta.addEventListener('input', upd);
     const ctx = { form, doc, ta, box, upd };
     box.addEventListener('click', e => essayClick(e, ctx));
+    box.addEventListener('change', e => { const s = e.target.closest('[data-sel="pro-inline"]'); if (s) syncMode(s.checked ? 'pro' : 'flash'); });
   }
   function prevText(doc) {
     const ap = APP();
@@ -928,13 +1003,14 @@
     if (b.dataset.ess) {
       if (ctx.box.dataset.busy) return;
       const op = b.dataset.ess;
+      if (op !== 'length' && !status?.enabled) return;
       const text = ctx.ta.value;
       if (op !== 'review' && !text.trim()) { out.hidden = false; out.innerHTML = '<p class="fqai-tiny">文本框是空的。外部文件版本请先把正文粘贴进来。</p>'; return; }
       ctx.box.dataset.busy = '1';
       ctx.box.querySelectorAll('[data-ess]').forEach(x => x.classList.toggle('on', x === b));
       out.hidden = false; out.innerHTML = `<div class="fqai-ess-wait"><span class="fqai-dots"><i></i><i></i><i></i></span>${op === 'review' ? '正在阅读当前版本…' : '正在分析正文…'}</div>`;
       try {
-        const res = await fetch('/api/ai/essay', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-FQ': '1' }, body: JSON.stringify({ op, docId: ctx.doc.id, text, prev: op === 'note' ? prevText(ctx.doc) : '', accepted: ctx.accepted || [], decision: lastAct?.decision || '', mode: LS.get('fqai:mode', 'flash') }) });
+        const res = await fetch('/api/ai/essay', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-FQ': '1' }, body: JSON.stringify({ op, docId: ctx.doc.id, text, prev: op === 'note' ? prevText(ctx.doc) : '', accepted: ctx.accepted || [], decision: lastAct?.decision || '', mode: op === 'length' ? 'flash' : LS.get('fqai:mode', 'flash') }) });
         const j = await res.json();
         if (!res.ok) throw new Error(j.error || '请求失败');
         ctx.result = j; ctx.op = op;

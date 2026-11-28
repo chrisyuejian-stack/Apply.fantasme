@@ -113,7 +113,7 @@ body.nav-open .fqai{display:none}
 .fqai-ctx label{display:flex;align-items:center;gap:6px;min-width:0;font-size:11px;color:var(--fqm);font-weight:700}
 .fqai-ctx select{flex:1;min-width:0;border:1px solid var(--fql);border-radius:8px;padding:5px 7px;font:inherit;font-size:12.5px;color:var(--fqf);background:#fff;font-weight:500}
 .fqai-ctx select.fqai-flash{border-color:var(--focus,#8E2F8C);box-shadow:0 0 0 3px rgba(142,47,140,.18)}
-.fqai-tools{display:flex;gap:5px;overflow-x:auto;scrollbar-width:thin;padding-bottom:2px}
+.fqai-tools{display:flex;flex-wrap:wrap;align-items:center;gap:6px;position:relative;overflow:visible}
 .fqai-tools button{flex:none;display:inline-flex;align-items:center;gap:5px;border:1px solid var(--fql);background:var(--fqp);color:var(--fqf);border-radius:999px;padding:5px 10px 5px 8px;font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}
 .fqai-tools button svg{width:14px;height:14px;color:var(--fqa)}
 .fqai-tools button:hover{border-color:var(--fqa);color:var(--fqa);background:#fff}
@@ -309,3 +309,17 @@ body.nav-open .fqai{display:none}
 .fqai-kind.doc{background:#EEF1FB;color:#3B4FA8}
 .fqai-pc.k-essay{border-left:0}
 .fqai-pc.k-essay .fqai-f a{color:var(--fqa,#5B3FA0);text-decoration:underline}
+/* issue #90 入口合并与作用域化 Pro */
+.fqai-tools button[aria-pressed="true"],.fqai-tools button[aria-expanded="true"]{border-color:var(--fqa);background:var(--fqs);color:var(--fqa)}
+.fqai-more-wrap{position:relative;display:inline-flex}
+.fqai-more-menu{position:absolute;top:calc(100% + 5px);right:0;min-width:196px;max-width:calc(100vw - 32px);background:#fff;border:1px solid var(--fql);border-radius:11px;padding:6px;box-shadow:0 8px 24px rgba(30,26,38,.14);z-index:20;display:flex;flex-direction:column;gap:4px}
+.fqai-more-menu button{width:100%;justify-content:flex-start;border-radius:8px;background:#fff}
+.fqai-more-menu button:hover:not(:disabled){background:var(--fqp)}
+.fqai-more-hd{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 6px 2px;font-size:10.5px;color:var(--fqm);font-weight:800;letter-spacing:.03em}
+.fqai-more-hd+.fqai-more-hd,.fqai-more-menu button+.fqai-more-hd{border-top:1px solid var(--fql);margin-top:2px;padding-top:6px}
+.fqai-draftbar{display:flex;align-items:center;flex-wrap:wrap;gap:5px;padding:6px 8px;background:var(--fqp);border:1px solid var(--fql);border-radius:10px}
+.fqai-draftbar-t{font-size:11px;color:var(--fqm);font-weight:700}
+.fqai-pro-chk{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;color:var(--focus,#8E2F8C);cursor:pointer;white-space:nowrap;user-select:none;padding:2px 6px;border-radius:6px;background:var(--fqs)}
+.fqai-pro-chk input{margin:0;accent-color:var(--focus,#8E2F8C);cursor:pointer}
+.fqai-follow .fqai-pro-chk,.fqai-draftbar .fqai-pro-chk{margin-left:auto}
+.fqai-ess-sep{width:1px;height:14px;background:var(--fql);margin:0 2px}
