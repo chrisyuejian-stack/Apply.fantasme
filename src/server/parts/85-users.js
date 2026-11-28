@@ -27,6 +27,7 @@ async function Qn(t, e, i) {
     let p = await de(e, i);
     if (!(i.role === "advisor" && n.role === "student" && p.manage.has(n.studentId))) throw new I(403, "\u53EA\u6709\u7533\u8BF7\u4E3B\u7BA1\u53EF\u4EE5\u5F00\u8BBE\u5458\u5DE5\u8D26\u53F7");
   }
+  if (String(n.id || "") === "__global__") throw new I(400, "账号 ID 为系统保留名称");
   let o = await en(e, n),
     r = ee(),
     s = await H(r),
