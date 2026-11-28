@@ -78,15 +78,26 @@ function fqaiSameOrigin(req) {
 const fqaiReady = new WeakMap();
 async function fqaiTables(db) {
   if (fqaiReady.has(db)) return fqaiReady.get(db);
-  const p = db.batch([
-    db.prepare('CREATE TABLE IF NOT EXISTS fq_ai_log (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, user_id TEXT, kind TEXT, question TEXT, tools TEXT, tokens_in INTEGER, tokens_out INTEGER, ms INTEGER, ok INTEGER, detail TEXT)'),
-    db.prepare('CREATE INDEX IF NOT EXISTS fq_ai_log_at ON fq_ai_log (at)'),
-    db.prepare('CREATE TABLE IF NOT EXISTS fq_ai_usage (day TEXT NOT NULL, user_id TEXT NOT NULL, kind TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (day, user_id, kind))'),
-    db.prepare('CREATE TABLE IF NOT EXISTS fq_ai_page_cache (url TEXT PRIMARY KEY, fetched_at INTEGER NOT NULL, status INTEGER, title TEXT, text TEXT)'),
-    db.prepare('CREATE TABLE IF NOT EXISTS fq_ai_feedback (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, user_id TEXT, student_id TEXT, key TEXT, kind TEXT, decision TEXT)'),
-    db.prepare('CREATE INDEX IF NOT EXISTS fq_ai_feedback_stu ON fq_ai_feedback (student_id)'),
-    db.prepare('CREATE TABLE IF NOT EXISTS fq_ai_reqdb_snap (user_id TEXT PRIMARY KEY, at TEXT NOT NULL, data TEXT NOT NULL)')
-  ]).catch(e => { fqaiReady.delete(db); throw e; });
+  const p = (async () => {
+    await db.batch([
+      db.prepare('CREATE TABLE IF NOT EXISTS fq_ai_log (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, user_id TEXT, kind TEXT, question TEXT, tools TEXT, tokens_in INTEGER, tokens_out INTEGER, ms INTEGER, ok INTEGER, detail TEXT)'),
+      db.prepare('CREATE INDEX IF NOT EXISTS fq_ai_log_at ON fq_ai_log (at)'),
+      db.prepare('CREATE TABLE IF NOT EXISTS fq_ai_usage (day TEXT NOT NULL, user_id TEXT NOT NULL, kind TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (day, user_id, kind))'),
+      db.prepare('CREATE TABLE IF NOT EXISTS fq_ai_page_cache (url TEXT PRIMARY KEY, fetched_at INTEGER NOT NULL, status INTEGER, title TEXT, text TEXT)'),
+      db.prepare("CREATE TABLE IF NOT EXISTS fq_ai_feedback (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, user_id TEXT, student_id TEXT, key TEXT, kind TEXT, decision TEXT, action TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '', risk INTEGER NOT NULL DEFAULT 0, target_id TEXT NOT NULL DEFAULT '')"),
+      db.prepare('CREATE INDEX IF NOT EXISTS fq_ai_feedback_stu ON fq_ai_feedback (student_id)'),
+      db.prepare('CREATE INDEX IF NOT EXISTS fq_ai_feedback_at ON fq_ai_feedback (at)'),
+      db.prepare('CREATE TABLE IF NOT EXISTS fq_ai_reqdb_snap (user_id TEXT PRIMARY KEY, at TEXT NOT NULL, data TEXT NOT NULL)')
+    ]);
+    const cols = new Set(((await db.prepare("PRAGMA table_info('fq_ai_feedback')").all()).results || []).map(c => c.name));
+    const alters = [
+      ['action', "ALTER TABLE fq_ai_feedback ADD COLUMN action TEXT NOT NULL DEFAULT ''"],
+      ['reason', "ALTER TABLE fq_ai_feedback ADD COLUMN reason TEXT NOT NULL DEFAULT ''"],
+      ['risk', 'ALTER TABLE fq_ai_feedback ADD COLUMN risk INTEGER NOT NULL DEFAULT 0'],
+      ['target_id', "ALTER TABLE fq_ai_feedback ADD COLUMN target_id TEXT NOT NULL DEFAULT ''"]
+    ].filter(([name]) => !cols.has(name)).map(([, sql]) => sql);
+    for (const sql of alters) await db.prepare(sql).run();
+  })().catch(e => { fqaiReady.delete(db); throw e; });
   fqaiReady.set(db, p);
   return p;
 }
@@ -1496,7 +1507,7 @@ function fqaiCards(raw, X) {
       const text = fqaiCut(String(c.text || '').trim(), 200); if (!text) continue;
       card = Object.assign(base, { kind, text, applicationId: app, key: `act:${sid}:${fqaiHash(fqaiSquash(text))}` });
     }
-    if (!card || keys.has(card.key) || X.ignored.has(card.key)) continue;
+    if (!card || keys.has(card.key)) continue;
     if (card.kind === 'update' && out.some(o => o.kind === 'update' && o.targetId === card.targetId)) continue;
     // 同一条任务已经有“删除 / 合并掉”的建议时，不再给它其他建议
     const ids = [card.targetId, card.keepId, card.dropId].filter(Boolean);
@@ -1505,14 +1516,21 @@ function fqaiCards(raw, X) {
     // 依据只有第三方网页时，提醒先核实
     const webEv = card.evidence?.filter(e => e.web) || [];
     if (webEv.length && !webEv.some(e => e.kind !== 'other') && card.evidence.every(e => e.web)) { card.risk = true; card.warn = '依据来自第三方网页，不是学校官网，请先核实再采纳'; }
+    // 风险卡与删除卡不允许通过忽略被隐藏
+    if (!card.risk && card.kind !== 'delete' && X.ignored.has(card.key)) continue;
     keys.add(card.key); out.push(card);
   }
   return out;
 }
 async function fqaiIgnored(db, sid) {
-  const rows = (await db.prepare('SELECT key, decision FROM fq_ai_feedback WHERE student_id = ? ORDER BY id').bind(sid).all()).results;
-  const last = new Map(); for (const r of rows) last.set(r.key, r.decision);
-  return new Set([...last].filter(([, d]) => d === 'ignore').map(([k]) => k));
+  const rows = (await db.prepare('SELECT key, kind, risk, decision FROM fq_ai_feedback WHERE student_id = ? ORDER BY id').bind(sid).all()).results;
+  const last = new Map();
+  const protectedKeys = new Set();
+  for (const r of rows) {
+    last.set(r.key, r.decision);
+    if (r.kind === 'delete' || Number(r.risk) > 0) protectedKeys.add(r.key);
+  }
+  return new Set([...last].filter(([k, d]) => d === 'ignore' && !protectedKeys.has(k)).map(([k]) => k));
 }
 const fqaiManual = v => fqaiArr(v).map(x => fqaiCut(String(x || '').trim(), 160)).filter(Boolean).slice(0, 6);
 
@@ -2579,6 +2597,178 @@ function fqaiX(deps, B, opt) {
   const { ctx, anchors, refs } = fqaiContext(B, deps.idx, deps.staff, today, opt);
   return { B, ctx, anchors, refs, idx: deps.idx, staff: deps.staff, today, ignored: new Set(), cfg: deps.cfg };
 }
+const FQAI_CARD_KINDS = ['add', 'update', 'close', 'activity', 'merge', 'delete', 'relink', 'deps', 'cascade', 'essay'];
+const FQAI_CARD_KIND_LABELS = { add: '新增任务', update: '调整任务', close: '关闭任务', activity: '记录动态', merge: '合并重复', delete: '删除任务', relink: '改关联', deps: '改前置', cascade: '连锁顺延', essay: '文书' };
+const FQAI_IGNORE_REASONS = ['irrelevant', 'duplicate', 'handled', 'wrong', 'other'];
+async function fqaiRecordShown(db, user, action, cards) {
+  if (!Array.isArray(cards) || !cards.length) return;
+  const now = new Date().toISOString();
+  const stmts = [];
+  for (const c of cards) {
+    if (!c || !FQAI_CARD_KINDS.includes(c.kind)) continue;
+    const tid = String(c.targetId || c.keepId || c.docId || '').slice(0, 120);
+    stmts.push(
+      db.prepare('INSERT INTO fq_ai_feedback (at, user_id, student_id, key, kind, decision, action, reason, risk, target_id) VALUES (?,?,?,?,?,?,?,?,?,?)')
+        .bind(now, user.id, String(c.studentId || ''), String(c.key || '').slice(0, 200), c.kind, 'show', action, '', c.kind === 'delete' || c.risk ? 1 : 0, tid)
+    );
+  }
+  if (stmts.length) await db.batch(stmts);
+}
+async function fqaiSurvivalReport(db, data, opt = {}) {
+  const days = Math.min(365, Math.max(7, Math.trunc(Number(opt?.days) || 90)));
+  const nowMs = Number.isFinite(opt?.now) ? opt.now : Date.now();
+  const cutoffIso = new Date(nowMs - days * 86400e3).toISOString();
+  const fbRows = (await db.prepare('SELECT id, at, user_id, student_id, action, kind, key, decision, reason, risk, target_id FROM fq_ai_feedback WHERE at >= ? ORDER BY at ASC, id ASC').bind(cutoffIso).all()).results || [];
+  const recRows = await data.rows(['tasks', 'documents']);
+  const taskById = new Map(), taskByKey = new Map();
+  const docById = new Map(), docByKey = new Map();
+  for (const r of recRows) {
+    if (r.tbl === 'tasks') {
+      taskById.set(r.id, r);
+      if (r.ai?.key) taskByKey.set(`${r.studentId || ''}\0${r.ai.key}`, r);
+    } else if (r.tbl === 'documents') {
+      docById.set(r.id, r);
+      if (r.ai?.key) docByKey.set(`${r.studentId || ''}\0${r.ai.key}`, r);
+    }
+  }
+  const emptyReasons = () => ({ irrelevant: 0, duplicate: 0, handled: 0, wrong: 0, other: 0, unspecified: 0 });
+  const groups = new Map();
+  const getGroup = (action, kind) => {
+    const gk = `${action}\0${kind}`;
+    let g = groups.get(gk);
+    if (!g) {
+      g = {
+        action,
+        actionLabel: FQAI_ACTIONS[action]?.label || (action === 'legacy' ? '历史/未归类' : action),
+        kind,
+        kindLabel: FQAI_CARD_KIND_LABELS[kind] || kind,
+        shown: 0, matureShown: 0, adopted: 0, adoptEdited: 0, ignored: 0, undone: 0,
+        survived7d: 0, newTaskAdopted: 0, na48h: 0,
+        riskKeys: new Set(),
+        ignoreReasons: emptyReasons()
+      };
+      groups.set(gk, g);
+    }
+    return g;
+  };
+  const instances = new Map();
+  for (const r of fbRows) {
+    const act = String(r.action || '') || 'legacy';
+    const kind = String(r.kind || '') || 'add';
+    const g = getGroup(act, kind);
+    const sid = String(r.student_id || '');
+    const cardKey = String(r.key || '');
+    const instKey = `${act}\0${kind}\0${sid}\0${cardKey || ('row:' + r.id)}`;
+    let st = instances.get(instKey);
+    if (!st) {
+      st = { group: g, studentId: sid, key: cardKey, kind, everAdopted: false, adoptEdited: false, undone: false, ignored: false, ignoreReason: '', adoptAtMs: NaN, targetId: '' };
+      instances.set(instKey, st);
+    }
+    const atMs = Date.parse(r.at);
+    if (Number(r.risk) > 0 || kind === 'delete') g.riskKeys.add(instKey);
+    if (r.target_id) st.targetId = String(r.target_id);
+    if (r.decision === 'show') {
+      g.shown++;
+      if (Number.isFinite(atMs) && (nowMs - atMs) >= 7 * 86400e3) g.matureShown++;
+    } else if (r.decision === 'adopt' || r.decision === 'adopt-edited') {
+      st.everAdopted = true;
+      if (r.decision === 'adopt-edited') st.adoptEdited = true;
+      st.undone = false;
+      st.ignored = false;
+      st.ignoreReason = '';
+      if (Number.isFinite(atMs)) st.adoptAtMs = atMs;
+    } else if (r.decision === 'undo') {
+      st.undone = true;
+    } else if (r.decision === 'ignore') {
+      st.ignored = true;
+      st.ignoreReason = FQAI_IGNORE_REASONS.includes(r.reason) ? r.reason : 'unspecified';
+    } else if (r.decision === 'unignore') {
+      st.ignored = false;
+      st.ignoreReason = '';
+    }
+  }
+  for (const st of instances.values()) {
+    const g = st.group;
+    if (st.ignored) {
+      g.ignored++;
+      g.ignoreReasons[st.ignoreReason || 'unspecified']++;
+    }
+    if (st.everAdopted) {
+      g.adopted++;
+      if (st.adoptEdited) g.adoptEdited++;
+      if (st.undone) g.undone++;
+      const t = (st.targetId ? taskById.get(st.targetId) : null) || (st.key ? taskByKey.get(`${st.studentId}\0${st.key}`) : null);
+      const d = (st.targetId ? docById.get(st.targetId) : null) || (st.key ? docByKey.get(`${st.studentId}\0${st.key}`) : null);
+      if (!st.undone) {
+        if (st.kind === 'add') {
+          g.newTaskAdopted++;
+          if (t && t.status === 'na') {
+            const naMs = Date.parse(t.updatedAt || t.doneAt || t.createdAt || '');
+            if (Number.isFinite(naMs) && Number.isFinite(st.adoptAtMs) && naMs >= st.adoptAtMs && (naMs - st.adoptAtMs) <= 48 * 3600e3) {
+              g.na48h++;
+            }
+          }
+        }
+        if (Number.isFinite(st.adoptAtMs) && (nowMs - st.adoptAtMs) >= 7 * 86400e3) {
+          let valid = false;
+          if (st.kind === 'delete') valid = !t;
+          else if (st.kind === 'activity') valid = true;
+          else if (st.kind === 'close') valid = !!t;
+          else if (st.kind === 'essay') valid = (d ? !d.archived : false) || (t ? t.status !== 'na' : false);
+          else valid = !!t && t.status !== 'na';
+          if (valid) g.survived7d++;
+        }
+      }
+    }
+  }
+  const summary = {
+    shown: 0, matureShown: 0, adopted: 0, adoptEdited: 0, ignored: 0, undone: 0,
+    survived7d: 0, newTaskAdopted: 0, na48h: 0,
+    ignoreReasons: emptyReasons()
+  };
+  const rows = [...groups.values()].map(g => {
+    const hasRisk = g.kind === 'delete' || g.riskKeys.size > 0;
+    const alwaysOpen = g.kind === 'delete' || hasRisk;
+    const survivalRate = g.shown > 0 ? Number((g.survived7d / g.shown).toFixed(4)) : null;
+    const guardrail48hRate = g.newTaskAdopted > 0 ? Number((g.na48h / g.newTaskAdopted).toFixed(4)) : null;
+    const lowSurvival = !alwaysOpen && ((g.shown >= 3 && survivalRate !== null && survivalRate < 0.25) || (g.ignored >= 3 && g.adopted === 0));
+    summary.shown += g.shown;
+    summary.matureShown += g.matureShown;
+    summary.adopted += g.adopted;
+    summary.adoptEdited += g.adoptEdited;
+    summary.ignored += g.ignored;
+    summary.undone += g.undone;
+    summary.survived7d += g.survived7d;
+    summary.newTaskAdopted += g.newTaskAdopted;
+    summary.na48h += g.na48h;
+    for (const k of Object.keys(summary.ignoreReasons)) summary.ignoreReasons[k] += g.ignoreReasons[k];
+    return {
+      action: g.action,
+      actionLabel: g.actionLabel,
+      kind: g.kind,
+      kindLabel: g.kindLabel,
+      alwaysOpen,
+      hasRisk,
+      riskCount: g.riskKeys.size,
+      lowSurvival,
+      shown: g.shown,
+      matureShown: g.matureShown,
+      adopted: g.adopted,
+      adoptEdited: g.adoptEdited,
+      ignored: g.ignored,
+      undone: g.undone,
+      survived7d: g.survived7d,
+      survivalRate,
+      newTaskAdopted: g.newTaskAdopted,
+      na48h: g.na48h,
+      guardrail48hRate,
+      ignoreReasons: g.ignoreReasons
+    };
+  }).sort((a, b) => (b.alwaysOpen - a.alwaysOpen) || (b.shown - a.shown) || a.action.localeCompare(b.action) || a.kind.localeCompare(b.kind));
+  summary.survivalRate = summary.shown > 0 ? Number((summary.survived7d / summary.shown).toFixed(4)) : null;
+  summary.guardrail48hRate = summary.newTaskAdopted > 0 ? Number((summary.na48h / summary.newTaskAdopted).toFixed(4)) : null;
+  return { days, summary, rows };
+}
 async function fqaiRunAction(deps, run, user, scope, body, emit) {
   const action = String(body.action || '');
   const A = FQAI_ACTIONS[action]; if (!A) throw new FqaiError(400, '未知功能');
@@ -2611,6 +2801,11 @@ async function fqaiRunAction(deps, run, user, scope, body, emit) {
       if (action === 'audit' && B.applications.length) result.follow = [{ label: '提交前检查', action: 'precheck', studentId: sid }, ...(B.repertoire.length ? [{ label: '曲目对照', action: 'repertoire', studentId: sid }] : [])];
     }
     if (run.tier === 'pro' && isModelAction) result.model = 'pro';
+    if (result) {
+      result.action = action;
+      for (const c of result.cards || []) if (c && typeof c === 'object') c.action = action;
+      await fqaiRecordShown(deps.db, user, action, result.cards);
+    }
     await deps.log({ user: user.id, kind: 'run:' + action, question: action + ' ' + (body.studentId || ''), tokensIn: deps.tokens.in, tokensOut: deps.tokens.out, ms: Date.now() - t0, ok: true, detail: `cards=${(result.cards || []).length}${result.web ? ` web=${(result.web.log || []).length}` : ''}` });
     emit({ type: 'result', result });
   } catch (e) {
@@ -2645,6 +2840,10 @@ async function fqaiDispatch(path, method, body, deps) {
     const rows = await deps.data.rows(['applications', 'submissions', 'rounds', 'tasks', 'documents', 'refRequests', 'recommenders', 'materials', 'activity']);
     return { json: fqaiQueue(user, scope, rows, fqaiDay(), staff) };
   }
+  if (path === '/api/ai/survival' && method === 'GET') {
+    if (user.role !== 'supervisor') throw new FqaiError(403, '仅申请主管可查看建议存活报表');
+    return { json: await fqaiSurvivalReport(db, deps.data, { days: Number(deps.query?.get('days')) || 90 }) };
+  }
   let m;
   if ((m = path.match(/^\/api\/ai\/record\/([A-Za-z0-9_.:-]{2,120})$/)) && method === 'GET') {
     const idx = await deps.loadIdx(); const r = idx.recById.get(m[1]);
@@ -2655,11 +2854,33 @@ async function fqaiDispatch(path, method, body, deps) {
   if (method !== 'POST') throw new FqaiError(405, '不支持的操作');
   const run = fqaiPick(cfg, body.mode);
   if (path === '/api/ai/feedback') {
+    if (!canAssist) throw new FqaiError(403, '仅内部顾问和主管可提交建议反馈');
     const d = String(body.decision || '');
-    if (!['adopt', 'adopt-edited', 'ignore', 'unignore', 'undo'].includes(d)) throw new FqaiError(400, '参数错误');
+    if (!['show', 'adopt', 'adopt-edited', 'ignore', 'unignore', 'undo'].includes(d)) throw new FqaiError(400, '参数错误');
+    const kind = String(body.kind || '');
+    if (!FQAI_CARD_KINDS.includes(kind)) throw new FqaiError(400, '参数错误');
+    const action = String(body.action || '');
+    if (action && !FQAI_ACTIONS[action]) throw new FqaiError(400, '参数错误');
+    const reason = String(body.reason || '');
+    if (reason && (d !== 'ignore' || !FQAI_IGNORE_REASONS.includes(reason))) throw new FqaiError(400, '参数错误');
+    const sid = String(body.studentId || '');
     const scope = await fqaiScope(deps.data, user);
-    if (!scope.manage.has(String(body.studentId || ''))) throw new FqaiError(403, '你没有这位学生的管理权限');
-    await db.prepare('INSERT INTO fq_ai_feedback (at, user_id, student_id, key, kind, decision) VALUES (?,?,?,?,?,?)').bind(new Date().toISOString(), user.id, String(body.studentId), String(body.key || '').slice(0, 200), String(body.kind || '').slice(0, 20), d).run();
+    if (!scope.manage.has(sid)) throw new FqaiError(403, '你没有这位学生的管理权限');
+    const key = String(body.key || '').replace(/[\r\n\x00-\x1f]/g, '').slice(0, 200);
+    const tidRaw = String(body.targetId || '').slice(0, 120);
+    const tid = /^[A-Za-z0-9_.:-]+$/.test(tidRaw) ? tidRaw : '';
+    const prior = key ? await db.prepare('SELECT kind, risk FROM fq_ai_feedback WHERE student_id = ? AND key = ? ORDER BY id DESC LIMIT 1').bind(sid, key).first() : null;
+    const risk = (body.risk || kind === 'delete' || prior?.kind === 'delete' || Number(prior?.risk) > 0) ? 1 : 0;
+    const nowIso = new Date().toISOString();
+    if (d === 'ignore' && reason && key) {
+      const prevIg = await db.prepare('SELECT id, at, decision, reason FROM fq_ai_feedback WHERE user_id = ? AND student_id = ? AND key = ? ORDER BY id DESC LIMIT 1').bind(user.id, sid, key).first();
+      if (prevIg && prevIg.decision === 'ignore' && !prevIg.reason && (Date.now() - Date.parse(prevIg.at)) <= 600e3) {
+        await db.prepare('UPDATE fq_ai_feedback SET reason = ? WHERE id = ?').bind(reason, prevIg.id).run();
+        return { json: { ok: true } };
+      }
+    }
+    await db.prepare('INSERT INTO fq_ai_feedback (at, user_id, student_id, key, kind, decision, action, reason, risk, target_id) VALUES (?,?,?,?,?,?,?,?,?,?)')
+      .bind(nowIso, user.id, sid, key, kind, d, action, d === 'ignore' ? reason : '', risk, tid).run();
     return { json: { ok: true } };
   }
   if (path === '/api/ai/essay') {
@@ -2753,7 +2974,7 @@ async function fqaiRoute(req, env, url) {
       if (text.length > 120000) throw new FqaiError(413, '内容过长');
       try { body = JSON.parse(text || '{}'); } catch (_) { throw new FqaiError(400, '请求格式不对'); }
     }
-    const deps = { env, cfg, db, user, data: fqaiD1Data(db), loadIdx: () => fqaiLoad(db), modelCalls: 0, modelOk: 0, model: async (run, b) => {
+    const deps = { env, cfg, db, user, query: url.searchParams, data: fqaiD1Data(db), loadIdx: () => fqaiLoad(db), modelCalls: 0, modelOk: 0, model: async (run, b) => {
       const maxCalls = run?.maxRunModelCalls || cfg.maxRunModelCalls || 8;
       if (++deps.modelCalls > maxCalls) throw new FqaiError(429, `单次任务的 AI 调用已达上限（${maxCalls} 次）`);
       const out = await fqaiModel(run, b);
