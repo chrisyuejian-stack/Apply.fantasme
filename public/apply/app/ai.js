@@ -271,6 +271,7 @@
             ${aiMore.map(toolBtn).join('')}
             <div class="fqai-more-hd"><span>程序直出</span></div>
             ${progMore.map(toolBtn).join('')}
+            ${status?.user?.role === 'supervisor' ? `<button type="button" data-fq="survival" title="按功能与卡片种类查看 7 天存活率、48h 不适用比例与忽略原因（仅主管可见）">${ICON.list}<span>建议存活报表</span></button>` : ''}
           </div>` : ''}
         </div>
       </div>
@@ -537,7 +538,14 @@
     else if (st === 'pending' && c.kind === 'add' && !c.task?.dueDate) actions = `<div class="fqai-cact"><button type="button" class="fqai-b pri" data-card="edit" data-ck="${ck}">${ICON.pen}设定日期后采纳</button><button type="button" class="fqai-b ghost" data-card="ignore" data-ck="${ck}">忽略</button></div>`;
     else if (st === 'pending') actions = `<div class="fqai-cact"><button type="button" class="fqai-b pri ${c.kind === 'delete' ? 'danger' : ''}" data-card="adopt" data-ck="${ck}">${ICON.check}${c.kind === 'delete' ? '确认删除' : '采纳'}</button>${editable ? `<button type="button" class="fqai-b" data-card="edit" data-ck="${ck}">${ICON.pen}修改后采纳</button>` : ''}<button type="button" class="fqai-b ghost" data-card="ignore" data-ck="${ck}">忽略</button></div>`;
     else if (st === 'adopted') actions = `<div class="fqai-cdone ok">${ICON.check}<span>已采纳 · ${esc(c.doneText || '')}</span>${c.result?.docId ? `<a href="#/doc/${esc(c.result.docId)}" data-nav="1">查看文书</a>` : ''}${c.result?.taskId || NEWK.includes(c.kind) ? `<a href="#/student/${esc(c.studentId)}/tasks" data-nav="1">查看任务</a>` : ''}<button type="button" class="fqai-mini" data-card="undo" data-ck="${ck}">${ICON.undo}撤销</button></div>`;
-    else if (st === 'ignored') actions = `<div class="fqai-cdone">已忽略，以后同类建议不再出现<button type="button" class="fqai-mini" data-card="unignore" data-ck="${ck}">撤回</button></div>`;
+    else if (st === 'ignored') {
+      const igReasons = [['irrelevant', '不相关'], ['duplicate', '重复'], ['handled', '已处理'], ['wrong', '信息错误'], ['other', '其他']];
+      const whyHtml = c.ignoreReason
+        ? `<span class="fqai-ig-picked">原因：${esc((igReasons.find(x => x[0] === c.ignoreReason) || ['', c.ignoreReason])[1])}</span>`
+        : `<span class="fqai-ig-why"><span>原因（可选）：</span>${igReasons.map(([r, l]) => `<button type="button" class="fqai-mini" data-igwhy="${r}" data-ck="${ck}">${l}</button>`).join('')}</span>`;
+      const igText = c.risk || c.kind === 'delete' ? '已忽略本次（风险/删除类建议下次仍会提醒）' : '已忽略，以后同类建议不再出现';
+      actions = `<div class="fqai-cdone"><span>${igText}</span>${whyHtml}<button type="button" class="fqai-mini" data-card="unignore" data-ck="${ck}">撤回</button></div>`;
+    }
     else if (st === 'stale') actions = `<div class="fqai-cdone warn">建议已失效：涉及的任务在建议生成后被修改或关闭了。需要的话请重新检查。</div>`;
     else if (st === 'dup') actions = `<div class="fqai-cdone">已存在相同任务（之前已采纳过这条建议）</div>`;
     else if (st === 'denied') actions = `<div class="fqai-cdone warn">你没有这位学生（或这条任务）的修改权限，不能采纳</div>`;
@@ -779,11 +787,12 @@
     feedback(c, 'undo');
     ap.Vs(); rerenderMsg(i);
   }
-  function feedback(c, decision) {
+  function feedback(c, decision, reason) {
     const ig = LS.get('fqai:ignored', []);
-    if (decision === 'ignore' && c.key && !ig.includes(c.key)) LS.set('fqai:ignored', ig.concat(c.key).slice(-500));
+    if (decision === 'ignore' && c.key && !c.risk && c.kind !== 'delete' && !ig.includes(c.key)) LS.set('fqai:ignored', ig.concat(c.key).slice(-500));
     if (decision === 'unignore') LS.set('fqai:ignored', ig.filter(x => x !== c.key));
-    fetch('/api/ai/feedback', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-FQ': '1' }, body: JSON.stringify({ key: c.key, kind: c.kind, decision, studentId: c.studentId }) }).catch(() => {});
+    const targetId = c.result?.taskId || c.targetId || c.keepId || c.result?.docId || '';
+    fetch('/api/ai/feedback', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-FQ': '1' }, body: JSON.stringify({ key: c.key, action: c.action || '', kind: c.kind, decision, reason: reason || '', risk: !!c.risk, targetId, studentId: c.studentId }) }).catch(() => {});
   }
   function onCard(btn) {
     const ck = btn.dataset.ck, act = btn.dataset.card;
@@ -792,8 +801,8 @@
     if (act === 'adopt-edit') return adopt(ck, readEdit(ck));
     if (act === 'edit') { c.editing = true; rerenderMsg(i); body.querySelector(`.fqai-pc[data-ck="${ck}"] .fqai-edit input, .fqai-pc[data-ck="${ck}"] .fqai-edit select`)?.focus(); return; }
     if (act === 'cancel') { c.editing = false; return rerenderMsg(i); }
-    if (act === 'ignore') { c.state = 'ignored'; feedback(c, 'ignore'); rerenderMsg(i); return focusNext(i, k); }
-    if (act === 'unignore' || act === 'reopen') { c.state = 'pending'; if (act === 'unignore') feedback(c, 'unignore'); return rerenderMsg(i); }
+    if (act === 'ignore') { c.state = 'ignored'; c.ignoreReason = ''; feedback(c, 'ignore', ''); rerenderMsg(i); return focusNext(i, k); }
+    if (act === 'unignore' || act === 'reopen') { c.state = 'pending'; c.ignoreReason = ''; if (act === 'unignore') feedback(c, 'unignore'); return rerenderMsg(i); }
     if (act === 'undo') return undoCard(ck);
   }
 
@@ -818,9 +827,14 @@
     const nav = e.target.closest('a[data-nav]');
     if (nav) { if (window.matchMedia('(max-width:640px)').matches) toggle(false); return; }
     if (moreOpen && !e.target.closest('.fqai-more-wrap')) { moreOpen = false; renderCtx(); }
-    const t = e.target.closest('[data-fq],[data-tool],[data-draft-sub],[data-rec],[data-verify],[data-card],[data-follow],[data-copy],[data-qhide]');
+    const t = e.target.closest('[data-fq],[data-tool],[data-draft-sub],[data-rec],[data-verify],[data-card],[data-igwhy],[data-follow],[data-copy],[data-qhide]');
     if (!t) return;
     if (t.dataset.qhide) return qHide(t.dataset.qhide);
+    if (t.dataset.igwhy) {
+      const { c, i } = getCard(t.dataset.ck);
+      if (c) { c.ignoreReason = t.dataset.igwhy; feedback(c, 'ignore', c.ignoreReason); rerenderMsg(i); }
+      return;
+    }
     if (t.dataset.card) return onCard(t);
     if (t.dataset.draftSub) {
       draftOpen = false; moreOpen = false; renderCtx();
@@ -831,6 +845,7 @@
     if (t.dataset.follow) { try { const f = JSON.parse(t.dataset.follow); if (f.studentId) { sel = { studentId: f.studentId, applicationId: f.applicationId || '' }; SS.set('fqai:sel', sel); renderCtx(); } return f.text ? paste(f.text) : run(f.action, f); } catch (_) { return; } }
     if (t.dataset.copy) { const ta = body.querySelector(`textarea[data-draft="${t.dataset.copy}"]`); if (ta) copy(ta.value, t); return; }
     if (t.dataset.fq === 'more') { moreOpen = !moreOpen; if (moreOpen) draftOpen = false; return renderCtx(); }
+    if (t.dataset.fq === 'survival') { moreOpen = false; renderCtx(); return openSurvival(); }
     if (t.dataset.fq === 'close') return toggle(false);
     if (t.dataset.fq === 'reset') { if (busy) return; conv = []; SS.set(KEY, conv); moreOpen = false; draftOpen = false; closeDrawer(); renderAll(); loadQueue(); return; }
     if (t.dataset.fq === 'q-show') return qUnhideAll();
@@ -858,6 +873,43 @@
     run(id, {});
   }
   function closeDrawer() { drawer.hidden = true; drawer.innerHTML = ''; }
+  async function openSurvival() {
+    if (status?.user?.role !== 'supervisor') return;
+    drawer.hidden = false;
+    drawer.innerHTML = `<div class="fqai-dhead"><button type="button" class="fqai-icon" data-fq="back" aria-label="返回">${ICON.back}</button><b>建议存活报表</b></div><div class="fqai-dbody"><p class="fqai-tiny">正在统计近 90 天建议存活数据…</p></div>`;
+    try {
+      const res = await fetch('/api/ai/survival?days=90', { credentials: 'same-origin' });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || '读取失败');
+      const s = j.summary || {};
+      const pct = v => v == null ? '—' : Math.round(v * 100) + '%';
+      const irNames = [['irrelevant', '不相关'], ['duplicate', '重复'], ['handled', '已处理'], ['wrong', '信息错误'], ['other', '其他'], ['unspecified', '未填原因']];
+      const irSummary = irNames.map(([k, l]) => [l, s.ignoreReasons?.[k] || 0]).filter(([, n]) => n > 0).map(([l, n]) => `<span>${l} ${n}</span>`).join('');
+      const rowHtml = r => `<tr>
+        <td><b>${esc(r.actionLabel)}</b> · ${esc(r.kindLabel)}${r.alwaysOpen ? ` <span class="fqai-pill ${r.kind === 'delete' ? 'bad' : 'warn'}">${r.kind === 'delete' ? '删除' : '含风险'}</span>` : ''}</td>
+        <td>${r.shown}</td>
+        <td>${r.adopted}${r.adoptEdited ? ` <small>(改 ${r.adoptEdited})</small>` : ''}</td>
+        <td>${r.ignored} / ${r.undone}</td>
+        <td><b>${pct(r.survivalRate)}</b> <small>(${r.survived7d}/${r.shown})</small></td>
+        <td>${r.newTaskAdopted ? `${pct(r.guardrail48hRate)} <small>(${r.na48h}/${r.newTaskAdopted})</small>` : '—'}</td>
+      </tr>`;
+      const mainRows = (j.rows || []).filter(r => !r.lowSurvival || r.alwaysOpen);
+      const lowRows = (j.rows || []).filter(r => r.lowSurvival && !r.alwaysOpen);
+      const thead = '<thead><tr><th>功能 × 种类</th><th>展示</th><th>采纳</th><th>忽略/撤</th><th>7天存活</th><th>48h不适用</th></tr></thead>';
+      drawer.querySelector('.fqai-dbody').innerHTML = `
+        <div class="fqai-surv-kpis">
+          <div><small>7 天有效存活率</small><b>${pct(s.survivalRate)}</b><span>${s.survived7d || 0} / ${s.shown || 0} 展示</span></div>
+          <div><small>48h 新建任务不适用</small><b>${pct(s.guardrail48hRate)}</b><span>${s.na48h || 0} / ${s.newTaskAdopted || 0} 新增</span></div>
+          <div><small>总采纳 / 忽略 / 撤销</small><b>${s.adopted || 0} / ${s.ignored || 0} / ${s.undone || 0}</b><span>近 ${j.days || 90} 天</span></div>
+        </div>
+        ${irSummary ? `<div class="fqai-surv-ir"><b>忽略原因：</b>${irSummary}</div>` : ''}
+        ${(j.rows || []).length ? `
+          <div class="fqai-tw"><table class="fqai-surv-tbl">${thead}<tbody>${mainRows.map(rowHtml).join('') || '<tr><td colspan="6" class="fqai-tiny">暂无高优先展开条目</td></tr>'}</tbody></table></div>
+          ${lowRows.length ? `<details class="fqai-surv-more"><summary>更多：低存活种类（${lowRows.length} 组）</summary><div class="fqai-tw"><table class="fqai-surv-tbl">${thead}<tbody>${lowRows.map(rowHtml).join('')}</tbody></table></div></details>` : ''}
+        ` : '<p class="fqai-tiny">近 90 天暂无建议展示或反馈记录。</p>'}
+        <p class="fqai-tiny">主指标 = 采纳满 7 天未撤销且任务仍在/已完成 ÷ 展示数；<code>delete</code> 与含风险标记的卡片永远展开。仅主管可见，不含学生姓名或卡片原文，模型不读取此表。</p>`;
+    } catch (err) { drawer.querySelector('.fqai-dbody').innerHTML = `<p class="fqai-err">${esc(err.message)}</p>`; }
+  }
   async function openRecord(id) {
     drawer.hidden = false;
     drawer.innerHTML = `<div class="fqai-dhead"><button type="button" class="fqai-icon" data-fq="back" aria-label="返回">${ICON.back}</button><b>院校库条目</b></div><div class="fqai-dbody"><p class="fqai-tiny">正在读取…</p></div>`;
@@ -920,7 +972,7 @@
     if (ev.type === 'status') setBusy(true, ev.text);
     else if (ev.type === 'result') {
       const ig = LS.get('fqai:ignored', []);
-      ev.result.cards = (ev.result.cards || []).filter(c => !c.key || !ig.includes(c.key)).map(c => Object.assign({ state: 'pending' }, c));
+      ev.result.cards = (ev.result.cards || []).filter(c => c.risk || c.kind === 'delete' || !c.key || !ig.includes(c.key)).map(c => Object.assign({ state: 'pending' }, c));
       setBusy(false); appendMsg(push(Object.assign({ role: 'result' }, ev.result))); setBusy(true, '正在整理…');
     } else if (ev.type === 'verify') { setBusy(false); appendMsg(push({ role: 'verify', report: ev.report })); setBusy(true, '正在整理…'); }
     else if (ev.type === 'answer') { setBusy(false); appendMsg(push({ role: 'assistant', content: ev.text, records: ev.records, sources: ev.sources || [], web: ev.web || null })); }
